@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Zywrap Offline Playground</title>
+    <style>
+        body { font-family: sans-serif; max-width: 900px; margin: 2em auto; display: grid; grid-template-columns: 1fr 2fr; gap: 2em; }
+        .controls { display: flex; flex-direction: column; gap: 1em; }
+        label { font-weight: bold; margin-bottom: 0.5em; display: block; }
+        select, textarea, button { font-size: 1em; padding: 0.5em; width: 100%; box-sizing: border-box; }
+        #output { white-space: pre-wrap; background: #f4f4f4; padding: 1em; border: 1px solid #ccc; min-height: 200px; }
+        .overrides { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; }
+        
+        .filter-options label {
+            font-weight: normal;
+            margin-bottom: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25em;
+        }
+        .filter-options input {
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <h1>Controls</h1>
+        <div>
+            <label for="category">1. Category:</label>
+            <select id="category"></select>
+            <div class="filter-options" style="margin-top: 0.5em;">
+                <label><input type="checkbox" id="filter-base"> Base Only</label>
+                <label><input type="checkbox" id="filter-featured" style="margin-left: 1em;"> Featured Only</label>
+            </div>
+            </div>
+        <div><label for="wrapper">2. Wrapper:</label><select id="wrapper" disabled></select></div>
+        <div><label for="model">3. AI Model:</label><select id="model"></select></div>
+        <div><label for="language">4. Language:</label><select id="language"></select></div>
+        <div><label for="prompt">5. Prompt:</label><textarea id="prompt" rows="5">Give the best result.</textarea></div>
+        <div class="overrides">
+            <div><label>Tone:</label><select id="toneCode"></select></div>
+            <div><label>Style:</label><select id="styleCode"></select></div>
+            <div><label>Formatting:</label><select id="formatCode"></select></div>
+            <div><label>Complexity:</label><select id="complexityCode"></select></div>
+            <div><label>Length:</label><select id="lengthCode"></select></div>
+            <div><label>Audience:</label><select id="audienceCode"></select></div>
+            <div><label>Goal:</label><select id="responseGoalCode"></select></div>
+            <div><label>Output:</label><select id="outputCode"></select></div>
+        </div>
+        <button id="run-button">Run Wrapper</button>
+    </div>
+    <div>
+        <h1>Playground</h1>
+        <h2>Output:</h2>
+        <pre id="output">API response will appear here...</pre>
+    </div>
+
+    <script>
+        // --- API Endpoint ---
+        // This is the key: it points to the Flask/Express server,
+        // using the same routing as the api.php file.
+        const API_ENDPOINT = 'http://localhost:5000/api.php';
+        
+        // --- Element Selectors ---
+        const categorySelect = document.getElementById('category');
+        const wrapperSelect = document.getElementById('wrapper');
+        const modelSelect = document.getElementById('model');
+        const languageSelect = document.getElementById('language');
+        const promptText = document.getElementById('prompt');
+        const runButton = document.getElementById('run-button');
+        const outputDiv = document.getElementById('output');
+        const filterFeaturedCheck = document.getElementById('filter-featured');
+        const filterBaseCheck = document.getElementById('filter-base');
+
+        // --- Reusable Populate Functions ---
+        async function populateSelect(element, url, valueField, textField) {
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                element.innerHTML = '<option value="">-- Select --</option>';
+                data.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = item[valueField];
+                    option.textContent = item[textField];
+                    element.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to populate select:', element.id, error);
+                element.innerHTML = '<option value="">Error loading data</option>';
+            }
+        }
+
+        //  --- Function to populate all override dropdowns ---
+        async function populateOverrides() {
+            try {
+                const response = await fetch(API_ENDPOINT + '?action=get_block_templates');
+                const templates = await response.json();
+
+                const overrideMap = {
+                    tones: 'toneCode', styles: 'styleCode', formattings: 'formatCode',
+                    complexities: 'complexityCode', lengths: 'lengthCode', audienceLevels: 'audienceCode',
+                    responseGoals: 'responseGoalCode', outputTypes: 'outputCode'
+                };
+
+                for (const type in overrideMap) {
+                    const element = document.getElementById(overrideMap[type]);
+                    const options = templates[type];
+                    if (element && options) {
+                        element.innerHTML = '<option value="">-- Default --</option>';
+                        options.forEach(opt => {
+                            const option = document.createElement('option');
+                            option.value = opt.code;
+                            option.textContent = opt.name;
+                            element.appendChild(option);
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to populate overrides:', error);
+            }
+        }
+
+        async function populateWrapperSelect() {
+            const categoryCode = categorySelect.value;
+            const showFeatured = filterFeaturedCheck.checked;
+            const showBase = filterBaseCheck.checked;
+
+            wrapperSelect.disabled = true;
+            wrapperSelect.innerHTML = '<option value="">Loading...</option>';
+
+            if (!categoryCode) {
+                wrapperSelect.innerHTML = '';
+                return;
+            }
+
+            try {
+                const response = await fetch(API_ENDPOINT + '?action=get_wrappers&category=' + categoryCode);
+                let wrappers = await response.json();
+
+                // Apply filters
+                if (showFeatured) {
+                    wrappers = wrappers.filter(w => w.featured);
+                }
+                if (showBase) {
+                    wrappers = wrappers.filter(w => w.base);
+                }
+
+                wrapperSelect.innerHTML = '<option value="">-- Select --</option>';
+                wrappers.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = item.code;
+                    option.textContent = item.name;
+                    wrapperSelect.appendChild(option);
+                });
+                wrapperSelect.disabled = false;
+
+            } catch (error) {
+                console.error('Failed to populate wrapper select:', error);
+                wrapperSelect.innerHTML = '<option value="">Error loading data</option>';
+            }
+        }
+        
+        //  --- Single Initial Load Event Listener ---
+        document.addEventListener('DOMContentLoaded', () => {
+            populateSelect(categorySelect, API_ENDPOINT + '?action=get_categories', 'code', 'name');
+            populateSelect(modelSelect, API_ENDPOINT + '?action=get_ai_models', 'code', 'name');
+            populateSelect(languageSelect, API_ENDPOINT + '?action=get_languages', 'code', 'name');
+            populateOverrides();
+        });
+
+        // --- Event Listeners ---
+        
+        categorySelect.addEventListener('change', populateWrapperSelect);
+
+        filterFeaturedCheck.addEventListener('change', populateWrapperSelect);
+        filterBaseCheck.addEventListener('change', populateWrapperSelect);
+
+        runButton.addEventListener('click', async () => {
+            outputDiv.textContent = 'Executing...';
+            const overrides = {};
+            document.querySelectorAll('.overrides select').forEach(sel => {
+                if (sel.value) {
+                    overrides[sel.id] = sel.value;
+                }
+            });
+
+            try {
+                // Note: The action is now in the request body for POST
+                const response = await fetch(API_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'execute', // Action is part of the payload
+                        model: modelSelect.value,
+                        wrapperCode: wrapperSelect.value,
+                        language: languageSelect.value,
+                        prompt: promptText.value,
+                        overrides: overrides
+                    })
+                });
+                const data = await response.json();
+                outputDiv.textContent = data.output || JSON.stringify(data, null, 2);
+            } catch (error) {
+                outputDiv.textContent = 'An error occurred: ' + error.message;
+            }
+        });
+    </script>
+</body>
+</html>
