@@ -1,175 +1,324 @@
+
 <?php
 
-// File: zywrap-sync.php
+// FILE: zywrap-sync.php
 /**
- * Zywrap SDK - Local Data Synchronizer
+ * Zywrap SDK - Smart Data Synchronizer
  *
- * This script connects to the official Zywrap API to fetch delta updates
- * and applies them to a local MySQL database.
+ * STRATEGY: "Download & Reconcile"
+ * 1. Downloads the latest full data bundle (zip).
+ * 2. Updates existing records and inserts new ones.
+ * 3. IDENTIFIES AND DELETES records that no longer exist in the bundle.
  *
- * USAGE:
- * 1. Configure the variables in the "CONFIGURATION" section below.
- * 2. Run from the command line: 'php zywrap-sync.php'
- * 3. Set up a cron job to run this script automatically (e.g., daily).
+ * USAGE: php zywrap-sync.php
  */
 
-// --- CONFIGURATION ---------------------------------------------------
-$zywrapApiKey = "YOUR_ZYWRAP_API_KEY";
-$zywrapApiEndpoint = 'https://api.zywrap.com/v1/sdk/export/updates'; // Updated Endpoint
-$versionFilePath = __DIR__ . '/.zywrap_version'; // A simple file to store the current data version
+// --- CONFIGURATION ---
+$apiKey = "YOUR_ZYWRAP_API_KEY"; // 🔑 Replace with your actual Key
+$apiUrl = 'https://api.zywrap.com/v1/sdk/export/updates'; // Updated Endpoint
+require 'db.php'; // 🔌 Your PDO database connection
 
-// Include the developer's local database connection
-require 'db.php'; // This file should provide the $pdo object
-// ---------------------------------------------------------------------
-
-
-/**
- * Reads the last sync version from the local database settings table.
- * @param PDO $pdo
- * @return string|null
- */
-function getCurrentVersion(PDO $pdo): ?string
-{
-    $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'data_version'");
-    $stmt->execute();
-    $result = $stmt->fetchColumn();
-    return $result ?: null;
+// --- HELPER: UPSERT BATCH (For Delta Updates) ---
+// Inserts new records or Updates existing ones. Does NOT delete.
+function upsertBatch(PDO $pdo, string $tableName, array $rows, array $columns, string $pk = 'code') {
+    if (empty($rows)) return;
+    
+    // Prepare column lists
+    $colList = implode(", ", $columns);
+    $placeholders = implode(", ", array_fill(0, count($columns), "?"));
+    
+    // ON DUPLICATE KEY UPDATE ...
+    $updateClause = [];
+    foreach ($columns as $col) {
+        if ($col !== $pk && $col !== 'type') { // Don't update Primary Keys
+            $updateClause[] = "$col = VALUES($col)";
+        }
+    }
+    $updateSql = implode(", ", $updateClause);
+    
+    $sql = "INSERT INTO $tableName ($colList) VALUES ($placeholders) 
+            ON DUPLICATE KEY UPDATE $updateSql";
+    
+    $stmt = $pdo->prepare($sql);
+    
+    $count = 0;
+    $pdo->beginTransaction();
+    try {
+        foreach ($rows as $row) {
+            $stmt->execute($row);
+            $count++;
+        }
+        $pdo->commit();
+        echo "   [+] Upserted $count records into '$tableName'.<br>";
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        echo "   [!] Error upserting $tableName: " . $e->getMessage() . "<br>";
+    }
 }
 
-/**
- * Saves the new version timestamp to the local database settings table.
- * @param PDO $pdo
- * @param string $version
- */
-function saveNewVersion(PDO $pdo, string $version): void
-{
-    $stmt = $pdo->prepare(
-        "INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)"
-    );
-    $stmt->execute([$version]);
+// --- HELPER: DELETE BATCH (For Explicit Deletions) ---
+function deleteBatch(PDO $pdo, string $tableName, array $ids, string $pk = 'code') {
+    if (empty($ids)) return;
+
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare("DELETE FROM $tableName WHERE $pk = ?");
+        foreach ($ids as $id) {
+            $stmt->execute([$id]);
+        }
+        $pdo->commit();
+        echo "   [-] Deleted " . count($ids) . " records from '$tableName'.<br>";
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        echo "   [!] Error deleting from $tableName: " . $e->getMessage() . "<br>";
+    }
 }
 
-// --- MAIN EXECUTION --------------------------------------------------
+// --- HELPER: FULL MIRROR SYNC (For Zip Import) ---
+// Upserts everything AND deletes anything in local DB that is missing from the Zip
+function syncTableFullMirror(PDO $pdo, string $tableName, array $rows, array $columns, string $pk = 'code') {
+    echo "   Wait.. Mirroring '$tableName' (" . count($rows) . " records)...<br>";
 
-echo "Starting Zywrap data sync...\n";
+    // 1. Get all Local IDs
+    $existingIds = [];
+    if ($tableName === 'block_templates') {
+        $stmt = $pdo->query("SELECT type, code FROM $tableName");
+        while ($row = $stmt->fetch()) $existingIds[$row['type'].'|'.$row['code']] = true;
+    } else {
+        $stmt = $pdo->query("SELECT $pk FROM $tableName");
+        $existingIds = array_flip($stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
 
-// 1. Get the current local data version from the database
-$currentVersion = getCurrentVersion($pdo);
-if (!$currentVersion) {
-    die("Error: No version found in the 'settings' table. Please run the full 'import.php' script first to establish a baseline.\n");
+    // 2. Upsert Batch
+    $colList = implode(", ", $columns);
+    $placeholders = implode(", ", array_fill(0, count($columns), "?"));
+    $updateClause = [];
+    foreach ($columns as $col) if ($col !== $pk && $col !== 'type') $updateClause[] = "$col = VALUES($col)";
+    $updateSql = implode(", ", $updateClause);
+    
+    $stmt = $pdo->prepare("INSERT INTO $tableName ($colList) VALUES ($placeholders) ON DUPLICATE KEY UPDATE $updateSql");
+
+    $pdo->beginTransaction();
+    try {
+        foreach ($rows as $row) {
+            // Remove from deletion list (Mark as Seen)
+            if ($tableName === 'block_templates') unset($existingIds[$row[0].'|'.$row[1]]);
+            else unset($existingIds[$row[0]]);
+            
+            $stmt->execute($row);
+        }
+        $pdo->commit();
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        echo "   [!] Error mirroring $tableName: " . $e->getMessage() . "<br>";
+        return;
+    }
+
+    // 3. Delete Leftovers
+    if (!empty($existingIds)) {
+        $pdo->beginTransaction();
+        try {
+            if ($tableName === 'block_templates') {
+                $delStmt = $pdo->prepare("DELETE FROM $tableName WHERE type = ? AND code = ?");
+                foreach (array_keys($existingIds) as $key) {
+                    [$t, $c] = explode('|', $key);
+                    $delStmt->execute([$t, $c]);
+                }
+            } else {
+                $delStmt = $pdo->prepare("DELETE FROM $tableName WHERE $pk = ?");
+                foreach (array_keys($existingIds) as $id) $delStmt->execute([$id]);
+            }
+            $pdo->commit();
+            echo "   [-] Cleaned up " . count($existingIds) . " obsolete records.<br>";
+        } catch (Exception $e) { $pdo->rollBack(); }
+    }
 }
-echo "Current local version: {$currentVersion}\n";
 
-// 2. Make an authenticated API call to the Zywrap sync endpoint
-$urlWithVersion = $zywrapApiEndpoint . '?fromVersion=' . urlencode($currentVersion);
+// =================================================================
+// MAIN LOGIC
+// =================================================================
 
-$ch = curl_init($urlWithVersion);
+echo "--- 🚀 Starting Zywrap Sync ---<br>";
+
+$stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'data_version'");
+$localVersion = $stmt->fetchColumn();
+echo "🔹 Local Version: " . ($localVersion ?: 'None') . "<br>";
+
+// 2. Call API
+$url = $apiUrl . '?fromVersion=' . urlencode($localVersion);
+
+$ch = curl_init($url);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_HTTPHEADER, ['Accept: application/json', 'Authorization: Bearer ' . $developerApiKey]);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Accept: application/json',
-    'Authorization: Bearer ' . $zywrapApiKey
+    'Authorization: Bearer ' . $apiKey
 ]);
-
-$responseJson = curl_exec($ch);
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+$response = curl_exec($ch);
+if ($response === false) {
+    echo 'cURL Error: ' . curl_error($ch);
+}
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
-if ($httpCode !== 200) {
-    die("Error: API request failed with status code {$httpCode}. Response: {$responseJson}\n");
-}
+if ($httpCode !== 200 || !$response) die("❌ API Error ($httpCode): $response<br>");
+$json = json_decode($response, true);
+if (!$json) die("❌ Invalid JSON response.<br>");
 
-$patch = json_decode($responseJson, true);
-if (!$patch) {
-    die("Error: Could not decode a valid patch from the API response.\n");
-}
+$mode = $json['mode'] ?? 'UNKNOWN';
+echo "🔹 Sync Mode: $mode<br>";
 
-echo "Successfully fetched patch version: " . $patch['newVersion'] . "\n";
+// --- SCENARIO A: FULL RESET (Download Zip) ---
+if ($mode === 'FULL_RESET') {
+    $zipFile = 'zywrap_temp.zip';
+    $jsonFile = 'zywrap-data.json';
+    $downloadUrl = $json['wrappers']['downloadUrl'];
 
-// 3. Apply the patch to the local database within a transaction
-try {
-    $pdo->beginTransaction();
-
-    // Process Updates/Creations (UPSERT)
-    if (!empty($patch['updates'])) {
-        // --- Process Wrappers ---
-        if (!empty($patch['updates']['wrappers'])) {
-            echo "Processing wrapper updates...\n";
-            $stmt = $pdo->prepare("INSERT INTO wrappers (code, name, description, category_code) VALUES (:code, :name, :description, :category_code) ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), category_code=VALUES(category_code)");
-            foreach ($patch['updates']['wrappers'] as $item) $stmt->execute($item);
+    // STEP 1: Attempt Auto Download & Unzip
+    echo "⬇️  Attempting automatic download...<br>";
+    $downloaded = @file_put_contents($zipFile, fopen($downloadUrl, 'r'));
+    
+    if ($downloaded) {
+        if (class_exists('ZipArchive')) {
+            $zip = new ZipArchive;
+            if ($zip->open($zipFile) === TRUE) {
+                $zip->extractTo(__DIR__);
+                $zip->close();
+                echo "✅ Auto-unzip successful.<br>";
+            } else {
+                echo "⚠️ Downloaded, but failed to unzip (Check permissions).<br>";
+            }
+        } else {
+            echo "⚠️ Downloaded, but 'ZipArchive' class is missing.<br>";
         }
+    } else {
+        echo "⚠️ Automatic download failed.<br>";
+    }
+
+    // STEP 2: Check for JSON file (Auto or Manual)
+    if (file_exists($jsonFile)) {
+        echo "📦 Found '$jsonFile'. Parsing Map Structure...<br>";
+        $data = json_decode(file_get_contents($jsonFile), true);
         
-        // --- Process Categories ---
-        if (!empty($patch['updates']['categories'])) {
-            echo "Processing category updates...\n";
-            $stmt = $pdo->prepare("INSERT INTO categories (code, name) VALUES (:code, :name) ON DUPLICATE KEY UPDATE name=VALUES(name)");
-            foreach ($patch['updates']['categories'] as $item) $stmt->execute($item);
-        }
+        if ($data) {
+            // 1. Categories (MAP: code => {name})
+            $rows = []; $ord = 1;
+            if (isset($data['categories'])) {
+                foreach($data['categories'] as $code => $cat) $rows[] = [$code, $cat['name'], $ord++];
+            }
+            syncTableFullMirror($pdo, 'categories', $rows, ['code', 'name', 'ordering']);
 
-        // --- Process Languages ---
-        if (!empty($patch['updates']['languages'])) {
-            echo "Processing language updates...\n";
-            $stmt = $pdo->prepare("INSERT INTO languages (code, name) VALUES (:code, :name) ON DUPLICATE KEY UPDATE name=VALUES(name)");
-            foreach ($patch['updates']['languages'] as $item) $stmt->execute($item);
-        }
+            // 2. Languages (MAP: code => name)
+            $rows = []; $ord = 1;
+            if (isset($data['languages'])) {
+                foreach($data['languages'] as $code => $name) $rows[] = [$code, $name, $ord++];
+            }
+            syncTableFullMirror($pdo, 'languages', $rows, ['code', 'name', 'ordering']);
 
-        // --- Process AI Models ---
-        if (!empty($patch['updates']['aiModels'])) {
-            echo "Processing AI model updates...\n";
-            $stmt = $pdo->prepare("INSERT INTO ai_models (code, name, provider_id) VALUES (:code, :name, :provider_id) ON DUPLICATE KEY UPDATE name=VALUES(name), provider_id=VALUES(provider_id)");
-            foreach ($patch['updates']['aiModels'] as $item) $stmt->execute($item);
-        }
+            // 3. AI Models (MAP: code => {name, provId})
+            $rows = []; $ord = 1;
+            if (isset($data['aiModels'])) {
+                foreach($data['aiModels'] as $code => $m) $rows[] = [$code, $m['name'], $m['provId'], $ord++];
+            }
+            syncTableFullMirror($pdo, 'ai_models', $rows, ['code', 'name', 'provider_id', 'ordering']);
 
-        // --- Process Block Templates ---
-        // (This assumes your 'export.js' groups them, if not, adjust)
-        $blockTypes = ['tones', 'styles', 'formattings', 'complexities', 'lengths', 'outputTypes', 'responseGoals', 'audienceLevels'];
-        foreach ($blockTypes as $type) {
-             if (!empty($patch['updates'][$type])) {
-                echo "Processing {$type} updates...\n";
-                $stmt = $pdo->prepare("INSERT INTO block_templates (type, code, name) VALUES (:type, :code, :name) ON DUPLICATE KEY UPDATE name=VALUES(name)");
-                foreach ($patch['updates'][$type] as $item) {
-                    $item['type'] = $type; // Add the 'type' for the composite key
-                    $stmt->execute($item);
+            // 4. Templates (MAP: type => { code => name })
+            $rows = [];
+            if (isset($data['templates'])) {
+                foreach ($data['templates'] as $type => $items) {
+                    if (is_array($items)) {
+                        foreach ($items as $code => $name) $rows[] = [$type, $code, $name];
+                    }
                 }
             }
+            syncTableFullMirror($pdo, 'block_templates', $rows, ['type', 'code', 'name']);
+
+            // 5. Wrappers (MAP: code => {name, desc, cat, ...})
+            $rows = []; $ord = 1;
+            if (isset($data['wrappers'])) {
+                foreach($data['wrappers'] as $code => $w) {
+                    $rows[] = [
+                        $code, $w['name'], $w['desc'], $w['cat'], 
+                        $w['featured'], $w['base'], $ord++
+                    ];
+                }
+            }
+            syncTableFullMirror($pdo, 'wrappers', $rows, ['code', 'name', 'description', 'category_code', 'featured', 'base', 'ordering']);
+
+            // Version
+            $newVersion = $json['wrappers']['version'];
+            $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)")->execute([$newVersion]);
+
+            // D. Cleanup
+            @unlink($zipFile);
+            @unlink($jsonFile);
+            echo "🎉 Full Reset Complete.<br>";
+        } else {
+            echo "❌ Error: '$jsonFile' is empty or invalid JSON.<br>";
         }
-        
+
+    } else {
+        // STEP 3: FAILSAFE - Ask User for Help
+        echo "❌ AUTOMATIC UPDATE FAILED.<br>";
+        echo "------------------------------------------------<br>";
+        echo "<br>The system could not download or unzip the update bundle automatically.<br>";
+        echo "<br>PLEASE FOLLOW THESE MANUAL STEPS:<br><br>";
+        echo "<br>1. Download the data bundle manually:<br>";
+        echo "<br>   👉 https://zywrap.com/sdk/download<br>";
+        echo "<br>2. Unzip the file ('zywrap-data.json') into this folder:<br>";
+        echo "<br>   📂 " . __DIR__ . "<br><br>";
+        echo "<br>3. Run this script again.<br>";
+        echo "------------------------------------------------<br>";
     }
 
-    // Process Deletions
-    if (!empty($patch['deletions'])) {
-        echo "Processing deletions...\n";
-        $deleteStmts = [
-            'Wrapper' => $pdo->prepare("DELETE FROM wrappers WHERE code = ?"),
-            'Category' => $pdo->prepare("DELETE FROM categories WHERE code = ?"),
-            'Language' => $pdo->prepare("DELETE FROM languages WHERE code = ?"),
-            'AIModel' => $pdo->prepare("DELETE FROM ai_models WHERE code = ?"),
-            // Add other types as needed
-        ];
+} 
+// --- SCENARIO B: DELTA UPDATE (Using API LIST Structure) ---
+elseif ($mode === 'DELTA_UPDATE') {
+    
+    // 1. Categories (LIST)
+    $rows = [];
+    foreach(($json['metadata']['categories']??[]) as $r) $rows[] = [$r['code'], $r['name'], $r['ordering']];
+    upsertBatch($pdo, 'categories', $rows, ['code', 'name', 'ordering']);
 
-        foreach ($patch['deletions'] as $item) {
-            if (isset($deleteStmts[$item['type']])) {
-                $deleteStmts[$item['type']]->execute([$item['code']]);
-            }
-            // Handle block templates (composite key)
-            if (str_ends_with($item['type'], 'BlockTemplate')) {
-                $stmt = $pdo->prepare("DELETE FROM block_templates WHERE code = ?");
-                $stmt->execute([$item['code']]);
-            }
+    // 2. Languages (LIST)
+    $rows = [];
+    foreach(($json['metadata']['languages']??[]) as $r) $rows[] = [$r['code'], $r['name'], $r['ordering']];
+    upsertBatch($pdo, 'languages', $rows, ['code', 'name', 'ordering']);
+
+    // 3. AI Models (LIST)
+    $rows = [];
+    foreach(($json['metadata']['aiModels']??[]) as $r) $rows[] = [$r['code'], $r['name'], $r['provider_id']??null, $r['ordering']];
+    upsertBatch($pdo, 'ai_models', $rows, ['code', 'name', 'provider_id', 'ordering']);
+
+    // 4. Templates (MAP of LISTS: type => [ {code, label} ])
+    $rows = [];
+    if (!empty($json['metadata']['templates'])) {
+        foreach ($json['metadata']['templates'] as $type => $items) {
+            foreach ($items as $item) $rows[] = [$type, $item['code'], $item['label'] ?? $item['name']];
         }
     }
+    upsertBatch($pdo, 'block_templates', $rows, ['type', 'code', 'name']);
 
-    $pdo->commit();
-    echo "Database successfully updated.\n";
+    // 5. Wrappers (LIST)
+    if (!empty($json['wrappers']['upserts'])) {
+        $rows = [];
+        foreach($json['wrappers']['upserts'] as $w) {
+            $rows[] = [$w['code'], $w['name'], $w['description'], $w['categoryCode'], $w['featured'], $w['base'], $w['ordering']];
+        }
+        upsertBatch($pdo, 'wrappers', $rows, ['code', 'name', 'description', 'category_code', 'featured', 'base', 'ordering']);
+    }
 
-} catch (Exception $e) {
-    $pdo->rollBack();
-    die("Database error: Failed to apply patch. Transaction rolled back. Reason: " . $e->getMessage() . "\n");
+    // 3. Wrappers: Deletes
+    if (!empty($json['wrappers']['deletes'])) {
+        deleteBatch($pdo, 'wrappers', $json['wrappers']['deletes']);
+    }
+
+    // 4. Update Version
+    if (!empty($json['newVersion'])) {
+        $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)")->execute([$json['newVersion']]);
+    }
+    
+    echo "✅ Delta Sync Complete.<br>";
 }
-
-// 4. Save the new version to the database
-saveNewVersion($pdo, $patch['newVersion']);
-echo "Sync complete. Local data is now at version " . $patch['newVersion'] . ".\n";
 
 ?>
