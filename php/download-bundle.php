@@ -3,7 +3,7 @@
 // USAGE: php download-bundle.php
 
 $apiKey = 'YOUR_API_KEY';
-$apiUrl = 'https://api.zywrap.com/v1/sdk/download';
+$apiUrl = 'https://api.zywrap.com/v1/sdk/export/';
 $outputFile = 'zywrap-data.zip';
 
 echo "Downloading latest wrapper data from Zywrap...\\n";
