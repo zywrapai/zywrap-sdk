@@ -3,7 +3,7 @@ const axios = require('axios');
 const fs = require('fs');
 
 const ZYWRAP_API_KEY = 'YOUR_API_KEY';
-const API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/download';
+const API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/export/';
 const OUTPUT_FILE = './zywrap-data.zip';
 
 async function downloadBundle() {
