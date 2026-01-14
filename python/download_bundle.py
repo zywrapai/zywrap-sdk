@@ -5,7 +5,7 @@ import sys
 # --- CONFIGURATION ---
 # Replace with your actual API key and the API endpoint
 ZYWRAP_API_KEY = 'YOUR_API_KEY_HERE'
-API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/download'
+API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/export/'
 OUTPUT_FILE = 'zywrap-data.zip'
 # ---------------------
 
