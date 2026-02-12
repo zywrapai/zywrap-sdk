@@ -68,17 +68,64 @@ def execute_zywrap_proxy(api_key, model, wrapper_code, prompt, language=None, ov
     if overrides:
         payload_data.update(overrides)
         
+    # Safety: Trim key
+    clean_key = api_key.strip()
+    
+    if clean_key == "YOUR_ZYWRAP_API_KEY":
+        print("❌ ERROR: API Key placeholder not replaced in app.py", file=sys.stderr)
+        return {'error': "API Key not configured in app.py"}, 500
+        
+    print(f"Using API Key: {clean_key[:5]}...{clean_key[-4:]}")
+
     headers = {
         'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}'
+        'Authorization': f'Bearer {clean_key}',
+        'User-Agent': 'ZywrapPythonSDK/1.0' # ✅ Added User-Agent
     }
     
     try:
-        response = requests.post(ZYWRAP_PROXY_URL, json=payload_data, headers=headers)
-        response.raise_for_status() # Raise an exception for bad status codes
-        return response.json(), response.status_code
+        # stream=True is key for keeping connection alive on long requests
+        response = requests.post(ZYWRAP_PROXY_URL, json=payload_data, headers=headers, stream=True, timeout=300)
+        
+        # Case A: Success (200 OK) -> It's a Stream
+        if response.status_code == 200:
+            final_json = None
+            # Iterate over lines in the stream
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8').strip()
+                    # Check for SSE 'data:' prefix
+                    if decoded_line.startswith('data: '):
+                        json_str = decoded_line[6:] # Remove 'data: '
+                        try:
+                            data = json.loads(json_str)
+                            if data and ('output' in data or 'error' in data):
+                                final_json = data
+                        except json.JSONDecodeError:
+                            pass # Ignore keep-alive lines or partial chunks
+            
+            if final_json:
+                return final_json, 200
+            else:
+                return {'error': 'Failed to parse streaming response from Zywrap.'}, 500
+
+        # Case B: Error (4xx/5xx) -> It's Standard JSON
+        else:
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = {'error': response.text}
+            return error_data, response.status_code
+
     except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'response': e.text if e.response else 'No response'}, 500
+        print(f"Proxy Error: {e}", file=sys.stderr)
+        error_msg = str(e)
+        if e.response is not None:
+             try:
+                 return e.response.json(), e.response.status_code
+             except:
+                 return {'error': e.response.text}, e.response.status_code
+        return {'error': error_msg}, 500
 
 
 # --- API Router ---
@@ -129,4 +176,5 @@ def api_router():
         conn.close()
 
 if __name__ == '__main__':
+    print(f"Zywrap Python SDK Playground backend listening at http://localhost:5000")
     app.run(debug=True, port=5000)
