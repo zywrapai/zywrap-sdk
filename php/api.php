@@ -61,16 +61,51 @@ function executeZywrapProxy($apiKey, $model, $wrapperCode, $prompt, $language = 
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 300); 
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'Content-Type: application/json',
         'Authorization: Bearer ' . $apiKey
     ]);
 
-    $response = curl_exec($ch);
+    // Execute request (Blocking, waits for full stream)
+    $rawResponse = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    
+    if (curl_errno($ch)) {
+        return ['status' => 500, 'response' => json_encode(['error' => curl_error($ch)])];
+    }
     curl_close($ch);
 
-    return ['status' => $httpCode, 'response' => $response];
+    // ✅ PARSE STREAM: Handle the new SSE/Streaming response
+    // The response will contain lines like "data: {...}" and ": keep-alive"
+    if ($httpCode === 200) {
+        $lines = explode("
+", $rawResponse);
+        $finalJson = null;
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (strpos($line, 'data: ') === 0) {
+                $jsonStr = substr($line, 6);
+                // Try decoding to see if it's the valid payload
+                $data = json_decode($jsonStr, true);
+                if ($data && (isset($data['output']) || isset($data['error']))) {
+                    $finalJson = $jsonStr;
+                }
+            }
+        }
+
+        if ($finalJson) {
+            return ['status' => 200, 'response' => $finalJson];
+        } else {
+            // Fallback if parsing fails but request was 200
+            return ['status' => 500, 'response' => json_encode(['error' => 'Failed to parse streaming response from Zywrap.'])];
+        }
+    }
+
+    return ['status' => $httpCode, 'response' => $rawResponse];
 }
 
 // --- API Router ---
