@@ -48,9 +48,7 @@ async function getBlockTemplates(client) {
     // Group by type for easy use on the frontend
     const grouped = {};
     for (const row of rows) {
-        if (!grouped[row.type]) {
-            grouped[row.type] = [];
-        }
+        if (!grouped[row.type]) grouped[row.type] = [];
         grouped[row.type].push({ code: row.code, name: row.name });
     }
     return grouped;
@@ -68,12 +66,8 @@ async function executeZywrapProxy(apiKey, model, wrapperCode, prompt, language =
         prompt
     };
     
-    if (language) {
-        payloadData.language = language;
-    }
-    if (overrides) {
-        Object.assign(payloadData, overrides);
-    }
+    if (language) payloadData.language = language;
+    if (overrides) Object.assign(payloadData, overrides);
     
     const headers = {
         'Content-Type': 'application/json',
@@ -81,14 +75,57 @@ async function executeZywrapProxy(apiKey, model, wrapperCode, prompt, language =
     };
 
     try {
-        const response = await axios.post(ZYWRAP_PROXY_URL, payloadData, { headers });
-        return { data: response.data, status: response.status };
+        // We use responseType: 'text' to get the raw stream data string
+        // This blocks until the stream finishes (similar to PHP curl_exec)
+        const response = await axios.post(ZYWRAP_PROXY_URL, payloadData, { 
+            headers,
+            responseType: 'text', 
+            timeout: 300000 // 5 minutes
+        });
+
+        // SUCCESS (200): Parse the text/event-stream
+        // Response string looks like: "data: {...}\n\n: keep-alive..."
+        const lines = response.data.split('\n');
+        let finalJson = null;
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data: ')) {
+                const jsonStr = trimmed.substring(6); // remove "data: "
+                try {
+                    const data = JSON.parse(jsonStr);
+                    if (data && (data.output || data.error)) {
+                        finalJson = data;
+                    }
+                } catch (e) {
+                    // Ignore keep-alive lines or partial chunks
+                }
+            }
+        }
+
+        if (finalJson) {
+            return { status: 200, data: finalJson };
+        } else {
+            return { status: 500, data: { error: 'Failed to parse streaming response from Zywrap.' } };
+        }
+
     } catch (error) {
-        console.error("Proxy Error:", error.response?.data || error.message);
-        return { 
-            data: error.response?.data || { error: error.message },
-            status: error.response?.status || 500
-        };
+        // ERROR (4xx/5xx): The body is already standard JSON
+        const status = error.response?.status || 500;
+        let errorData = { error: error.message };
+
+        if (error.response?.data) {
+            // If responseType is 'text', axios returns string even for JSON errors
+            try {
+                errorData = typeof error.response.data === 'string' 
+                    ? JSON.parse(error.response.data) 
+                    : error.response.data;
+            } catch (e) {
+                errorData = { error: error.response.data };
+            }
+        }
+        
+        return { status, data: errorData };
     }
 }
 
