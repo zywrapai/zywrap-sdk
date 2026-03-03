@@ -5,7 +5,7 @@ import sys
 # --- CONFIGURATION ---
 # Replace with your actual API key and the API endpoint
 ZYWRAP_API_KEY = 'YOUR_API_KEY_HERE'
-API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/download'
+API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/v1/download'
 OUTPUT_FILE = 'zywrap-data.zip'
 # ---------------------
 
@@ -19,41 +19,27 @@ def download_sdk_bundle():
         print("FATAL: Please replace 'YOUR_API_KEY_HERE' with your actual Zywrap API key.", file=sys.stderr)
         sys.exit(1)
 
-    headers = {
-        'Authorization': f'Bearer {ZYWRAP_API_KEY}',
-        'Accept': 'application/zip' # Request a zip file
-    }
+    headers = {'Authorization': f'Bearer {ZYWRAP_API_KEY}'}
 
     try:
-        # Make the GET request to the download endpoint
-        response = requests.get(API_ENDPOINT, headers=headers, stream=True, timeout=60)
-        
-        # Check if the request was successful
+        # stream=True ensures we don't load the entire zip into RAM at once
+        response = requests.get(API_ENDPOINT, headers=headers, stream=True, timeout=300, verify=False)
         response.raise_for_status()
 
-        # Write the content to the output file
+        # Write directly to disk
         with open(OUTPUT_FILE, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         
         print(f"✅ Sync complete. Data saved to {OUTPUT_FILE}.")
-        print(f"Run 'unzip {OUTPUT_FILE}' to extract the 'zywrap-data.json' file.")
+        print(f"Run 'unzip {OUTPUT_FILE}' to extract the 'zywrap-data.json' file, then run 'python import.py'.")
 
     except requests.exceptions.HTTPError as e:
         print(f"FATAL: API request failed with status code {e.response.status_code}.", file=sys.stderr)
-        try:
-            # Try to print JSON error if possible
-            print(f"Response: {e.response.json()}", file=sys.stderr)
-        except requests.exceptions.JSONDecodeError:
-            print(f"Response: {e.response.text}", file=sys.stderr)
-        sys.exit(1)
-    except requests.exceptions.RequestException as e:
-        print(f"FATAL: A network error occurred: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"FATAL: An unexpected error occurred: {e}", file=sys.stderr)
+        print(f"FATAL: An error occurred: {e}", file=sys.stderr)
         sys.exit(1)
 
-# This allows the script to be run directly from the command line
 if __name__ == "__main__":
     download_sdk_bundle()

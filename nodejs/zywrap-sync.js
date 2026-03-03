@@ -1,152 +1,218 @@
+
 // FILE: zywrap-sync.js
 // USAGE: node zywrap-sync.js
+// DEPENDENCIES: npm install axios pg adm-zip
 
-const axios = require('axios'); // npm install axios
-const pool = require('./db');
+const axios = require('axios');
+const fs = require('fs');
+const AdmZip = require('adm-zip');
+const { execSync } = require('child_process');
+const pool = require('./db'); 
 
 // --- CONFIGURATION ---
-const DEVELOPER_API_KEY = 'YOUR_ZYWRAP_API_KEY_HERE';
-const ZYWRAP_API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/export/updates';
-// ---------------------
+const API_KEY = 'YOUR_ZYWRAP_API_KEY_HERE'; // Your Actual Key
+const API_URL = 'https://api.zywrap.com/v1/sdk/v1/sync';
 
-async function getCurrentVersion(client) {
-    const res = await client.query("SELECT setting_value FROM settings WHERE setting_key = 'data_version'");
-    return res.rows[0]?.setting_value;
-}
+// --- HELPER FUNCTIONS ---
 
-async function saveNewVersion(client, version) {
-    await client.query(
-        "INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', $1) ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value",
-        [version]
-    );
-}
+/**
+ * Upserts a batch of records. (Used for Delta Updates & Mirror Sync)
+ */
+async function upsertBatch(client, tableName, rows, columns, pk = 'code') {
+    if (!rows.length) return;
+    
+    // Batch size (Safety limit for Postgres params is ~65k. 1000 rows * 10 cols = 10k params, which is safe)
+    const BATCH_SIZE = 1000; 
 
-// Block template types from PHP SDK
-const blockTypes = ['tones', 'styles', 'formattings', 'complexities', 'lengths', 'outputTypes', 'responseGoals', 'audienceLevels'];
+    // 1. Prepare Query Parts (Constant for all batches)
+    const colNames = columns.map(c => `"${c}"`).join(', ');
+    const updateCols = columns
+        .filter(c => c !== pk && c !== 'type')
+        .map(c => `"${c}" = EXCLUDED."${c}"`)
+        .join(', ');
+    const conflictTarget = pk === 'compound_template' ? '(type, code)' : `("${pk}")`;
 
-async function main() {
-    console.log('Starting Zywrap data sync...');
-    const client = await pool.connect();
+    console.log(`   [+] Upserting ${rows.length} records into '${tableName}'...`);
 
-    try {
-        const currentVersion = await getCurrentVersion(client);
-        if (!currentVersion) {
-            throw new Error("No version found in 'settings' table. Run the full 'import.js' script first.");
+    // 2. Loop through chunks
+    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+        const chunk = rows.slice(i, i + BATCH_SIZE);
+        const values = [];
+        const rowPlaceholders = [];
+        let counter = 1;
+
+        for (const row of chunk) {
+            const rowPh = [];
+            for (const cell of row) {
+                rowPh.push(`$${counter++}`);
+                values.push(cell);
+            }
+            rowPlaceholders.push(`(${rowPh.join(', ')})`);
         }
-        console.log(`Current local version: ${currentVersion}`);
 
-        const response = await axios.get(ZYWRAP_API_ENDPOINT, {
-            params: { fromVersion: currentVersion },
-            headers: { 'Authorization': `Bearer ${DEVELOPER_API_KEY}` }
+        const query = `
+            INSERT INTO "${tableName}" (${colNames}) 
+            VALUES ${rowPlaceholders.join(', ')}
+            ON CONFLICT ${conflictTarget} 
+            DO UPDATE SET ${updateCols}
+        `;
+
+        try {
+            await client.query(query, values);
+            // Show a dot for every batch to indicate liveliness
+            process.stdout.write('.'); 
+        } catch (e) {
+            console.error(`\n   [!] Error upserting batch in ${tableName}:`, e.message);
+            throw e; // Critical: Stop transaction on error
+        }
+    }
+    console.log(`   [+] Upserted ${rows.length} records into '${tableName}'.`);
+}
+
+/**
+ * Deletes specific IDs. (Used for Delta Updates)
+ */
+async function deleteBatch(client, tableName, ids, pk = 'code') {
+    if (!ids.length) return;
+    
+    const BATCH_SIZE = 2000;
+    console.log(`   [-] Deleting ${ids.length} records from '${tableName}'...`);
+
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+        const chunk = ids.slice(i, i + BATCH_SIZE);
+        await client.query(`DELETE FROM "${tableName}" WHERE "${pk}" = ANY($1)`, [chunk]);
+    }
+    console.log(`   [-] Deleted ${ids.length} records from '${tableName}'.`);
+}
+
+// --- MAIN ---
+(async () => {
+    console.log('--- 🚀 Starting Zywrap V1 Sync ---');
+    const client = await pool.connect();
+    
+    try {
+        const verRes = await client.query("SELECT setting_value FROM settings WHERE setting_key = 'data_version'");
+        const localVersion = verRes.rows[0]?.setting_value || '';
+        console.log(`🔹 Local Version: ${localVersion || 'None'}`);
+
+        const response = await axios.get(API_URL, {
+            params: { fromVersion: localVersion },
+            headers: { 'Authorization': `Bearer ${API_KEY}` }
         });
         
-        const patch = response.data;
-        if (!patch || !patch.newVersion) {
-             console.log("No new updates found. Local data is already up to date.");
-             client.release();
-             return;
-        }
-        
-        console.log(`Successfully fetched patch version: ${patch.newVersion}`);
+        const json = response.data;
+        console.log(`🔹 Sync Mode: ${json.mode}`);
 
-        await client.query('BEGIN');
+        if (json.mode === 'FULL_RESET') {
+            const zipPath = 'zywrap-data.zip';
+            const downloadUrl = json.wrappers.downloadUrl;
 
-        // Process Updates/Creations (UPSERT)
-        if (patch.updates) {
-            // Update Wrappers
-            if (patch.updates.wrappers) {
-                console.log(`Updating ${patch.updates.wrappers.length} wrapper(s)...`);
-                for (const w of patch.updates.wrappers) {
-                    await client.query(
-                        'INSERT INTO wrappers (code, name, description, category_code, featured, base, updated_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, category_code = EXCLUDED.category_code, featured = EXCLUDED.featured, base = EXCLUDED.base, updated_at = NOW()', 
-                        [w.code, w.name, w.desc, w.cat, w.featured, w.base]
-                    );
+            console.log(`⬇️  Attempting automatic download from Zywrap...`);
+            
+            try {
+                const dl = await axios({
+                    url: downloadUrl,
+                    method: 'GET',
+                    responseType: 'arraybuffer',
+                    headers: { 'Authorization': `Bearer ${API_KEY}` }
+                });
+
+                fs.writeFileSync(zipPath, dl.data);
+                const mbSize = (fs.statSync(zipPath).size / (1024 * 1024)).toFixed(2);
+                console.log(`✅ Data bundle downloaded successfully (${mbSize} MB).`);
+                
+                try {
+                    console.log('📦 Attempting auto-unzip...');
+                    const zip = new AdmZip(zipPath);
+                    zip.extractAllTo(__dirname, true);
+                    console.log('✅ Auto-unzip successful. Running import script...');
+                    
+                    fs.unlinkSync(zipPath);
+                    
+                    // Run the import script automatically
+                    execSync('node import.js', { stdio: 'inherit' });
+                    
+                } catch (zErr) {
+                    console.log("⚠️ Failed to auto-unzip (Check directory permissions).");
+                    console.log("\n👉 ACTION REQUIRED:");
+                    console.log(`   1. Please manually unzip '${zipPath}' in this folder.`);
+                    console.log("   2. Then run: node import.js");
                 }
+
+            } catch (dlErr) {
+                console.log(`❌ Automatic download failed. HTTP Status: ${dlErr.response?.status || 'Unknown'}`);
             }
-            // Update Categories
-            if (patch.updates.categories) {
-                console.log(`Updating ${Object.keys(patch.updates.categories).length} category(s)...`);
-                for (const [code, c] of Object.entries(patch.updates.categories)) {
-                    await client.query(
-                        'INSERT INTO categories (code, name, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()', 
-                        [code, c.name]
-                    );
-                }
+
+        } else if (json.mode === 'DELTA_UPDATE') {
+            await client.query('BEGIN');
+            const meta = json.metadata || {};
+
+            // Categories
+            if (meta.categories) {
+                const rows = meta.categories.map(r => [r.code, r.name, r.status ?? true, r.position || r.displayOrder || r.ordering]);
+                await upsertBatch(client, 'categories', rows, ['code', 'name', 'status', 'ordering']);
             }
-            // Update Languages
-            if (patch.updates.languages) {
-                console.log(`Updating ${Object.keys(patch.updates.languages).length} language(s)...`);
-                for (const [code, name] of Object.entries(patch.updates.languages)) {
-                    await client.query(
-                        'INSERT INTO languages (code, name, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()', 
-                        [code, name]
-                    );
-                }
+
+            // Languages
+            if (meta.languages) {
+                const rows = meta.languages.map(r => [r.code, r.name, r.status ?? true, r.ordering]);
+                await upsertBatch(client, 'languages', rows, ['code', 'name', 'status', 'ordering']);
             }
-            // Update AI Models
-            if (patch.updates.aiModels) {
-                console.log(`Updating ${Object.keys(patch.updates.aiModels).length} AI model(s)...`);
-                for (const [code, m] of Object.entries(patch.updates.aiModels)) {
-                    await client.query(
-                        'INSERT INTO ai_models (code, name, provider_id, updated_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, provider_id=EXCLUDED.provider_id, updated_at=NOW()', 
-                        [code, m.name, m.provId]
-                    );
+
+            // AI Models
+            if (meta.aiModels) {
+                const rows = meta.aiModels.map(r => [r.code, r.name, r.status ?? true, r.displayOrder || r.ordering]);
+                await upsertBatch(client, 'ai_models', rows, ['code', 'name', 'status', 'ordering']);
+            }
+
+            // Templates
+            if (meta.templates) {
+                const rows = [];
+                for (const [type, items] of Object.entries(meta.templates)) {
+                    for (const i of items) rows.push([type, i.code, i.label || i.name, i.status ?? true]);
                 }
+                await upsertBatch(client, 'block_templates', rows, ['type', 'code', 'name', 'status'], 'compound_template');
+            }
+
+            // Use Cases
+            if (json.useCases?.upserts?.length) {
+                const rows = json.useCases.upserts.map(uc => [
+                    uc.code, uc.name, uc.description, uc.categoryCode, 
+                    uc.schema ? JSON.stringify(uc.schema) : null, 
+                    uc.status ?? true, uc.displayOrder || uc.ordering
+                ]);
+                await upsertBatch(client, 'use_cases', rows, ['code', 'name', 'description', 'category_code', 'schema_data', 'status', 'ordering']);
+            }
+
+            // Wrappers
+            if (json.wrappers?.upserts?.length) {
+                const rows = json.wrappers.upserts.map(w => [
+                    w.code, w.name, w.description, w.useCaseCode || w.categoryCode, 
+                    !!(w.featured || w.isFeatured), !!(w.base || w.isBaseWrapper), 
+                    w.status ?? true, w.displayOrder || w.ordering
+                ]);
+                await upsertBatch(client, 'wrappers', rows, ['code', 'name', 'description', 'use_case_code', 'featured', 'base', 'status', 'ordering']);
+            }
+
+            // Deletes
+            if (json.wrappers?.deletes?.length) await deleteBatch(client, 'wrappers', json.wrappers.deletes);
+            if (json.useCases?.deletes?.length) await deleteBatch(client, 'use_cases', json.useCases.deletes);
+            
+            if (json.newVersion) {
+                await client.query("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', $1) ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value", [json.newVersion]);
             }
             
-            // Update Block Templates (Correct logic)
-            console.log('Checking for block template updates...');
-            for (const type of blockTypes) {
-                if (patch.updates[type]) {
-                    for (const [code, name] of Object.entries(patch.updates[type])) {
-                         await client.query(
-                            'INSERT INTO block_templates (type, code, name, updated_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT (type, code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()',
-                            [type, code, name]
-                        );
-                    }
-                }
-            }
+            await client.query('COMMIT');
+            console.log('✅ Delta Sync Complete.');
+        } else {
+            console.log('✅ No updates needed.');
         }
 
-        // Process Deletions (Correct logic)
-        if (patch.deletions?.length) {
-            console.log(`Processing ${patch.deletions.length} deletion(s)...`);
-            for (const d of patch.deletions) {
-                switch(d.type) {
-                    case 'Wrapper':
-                        await client.query('DELETE FROM wrappers WHERE code = $1', [d.code]);
-                        break;
-                    case 'Category':
-                        await client.query('DELETE FROM categories WHERE code = $1', [d.code]);
-                        break;
-                    case 'Language':
-                        await client.query('DELETE FROM languages WHERE code = $1', [d.code]);
-                        break;
-                    case 'AIModel':
-                        await client.query('DELETE FROM ai_models WHERE code = $1', [d.code]);
-                        break;
-                    // Note: Block templates are deleted by their type name
-                    case (d.type.endsWith('BlockTemplate') ? d.type : null):
-                        // This logic assumes d.type is e.g. 'ToneBlockTemplate'
-                        // The PHP SDK implies it's just 'Tone' and 'code'
-                        // Let's match the PHP SDK's simple logic for block template deletion
-                        await client.query('DELETE FROM block_templates WHERE code = $1', [d.code]);
-                        break;
-                }
-            }
-        }
-        
-        await saveNewVersion(client, patch.newVersion);
-        await client.query('COMMIT');
-
-        console.log(`\n✅ Sync complete. Local data is now at version ${patch.newVersion}.\n`);
     } catch (e) {
-        await client.query('ROLLBACK');
-        console.error('Error during sync, transaction rolled back:', e.response?.data || e.message);
-        throw e;
+        if (client) await client.query('ROLLBACK');
+        console.error('\n❌ Sync Error:', e.message);
     } finally {
-        client.release();
+        if (client) client.release();
+        await pool.end();
     }
-}
-
-main().catch(() => process.exit(1));
+})();

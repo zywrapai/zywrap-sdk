@@ -1,23 +1,23 @@
 # FILE: zywrap-sync.py
 # USAGE: python zywrap-sync.py
+# REQUIREMENTS: pip install requests psycopg2-binary
 
 import requests
 import sys
+import os
+import zipfile
+import psycopg2.extras 
 from db import get_db_connection
 
 # --- CONFIGURATION ---
 DEVELOPER_API_KEY = 'YOUR_ZYWRAP_API_KEY_HERE'
-ZYWRAP_API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/export/updates'
+ZYWRAP_API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/v1/sync'
 # ---------------------
-
-# Block template types from PHP SDK
-BLOCK_TYPES = ['tones', 'styles', 'formattings', 'complexities', 'lengths', 'outputTypes', 'responseGoals', 'audienceLevels']
-
 
 def get_current_version(cur):
     cur.execute("SELECT setting_value FROM settings WHERE setting_key = 'data_version'")
     result = cur.fetchone()
-    return result[0] if result else None
+    return result[0] if result else ''
 
 def save_new_version(cur, version):
     cur.execute(
@@ -25,109 +25,161 @@ def save_new_version(cur, version):
         (version,)
     )
 
+# --- HELPER FUNCTIONS ---
+
+def upsert_batch(cur, table, rows, cols, pk='code'):
+    """Optimized Upsert using Postgres ON CONFLICT"""
+    if not rows: return
+    
+    col_names = ", ".join(cols)
+    updates = [f"{c} = EXCLUDED.{c}" for c in cols if c != pk and c != 'type']
+    update_clause = ", ".join(updates)
+    conflict_target = f"({pk})" if pk != 'compound_template' else "(type, code)"
+    
+    query = f"""
+        INSERT INTO {table} ({col_names}) VALUES %s
+        ON CONFLICT {conflict_target} DO UPDATE SET {update_clause}
+    """
+    try:
+        psycopg2.extras.execute_values(cur, query, rows, page_size=1000)
+        print(f"   [+] Upserted {len(rows)} records into '{table}'.")
+    except Exception as e:
+        print(f"   [!] Error upserting {table}: {e}")
+
+def delete_batch(cur, table, ids, pk='code'):
+    if not ids: return
+    query = f"DELETE FROM {table} WHERE {pk} = ANY(%s)"
+    try:
+        cur.execute(query, (list(ids),))
+        print(f"   [-] Deleted {len(ids)} records from '{table}'.")
+    except Exception as e:
+        print(f"   [!] Error deleting from {table}: {e}")
+
+# --- MAIN LOGIC ---
+
 def main():
-    print("Starting Zywrap data sync...")
+    print("--- 🚀 Starting Zywrap V1 Sync ---")
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             current_version = get_current_version(cur)
-            if not current_version:
-                raise Exception("No version found. Run the full 'import.py' script first.")
-            print(f"Current local version: {current_version}")
+            print(f"🔹 Local Version: {current_version or 'None'}")
+            
+            # 🟢 FIX: Commit immediately to release the read-lock on the settings table!
+            # Without this, import.py will deadlock when trying to TRUNCATE.
+            conn.commit()
 
-            # 1. Fetch patch from Zywrap API
+            # 1. Fetch update info
             headers = {'Authorization': f'Bearer {DEVELOPER_API_KEY}', 'Accept': 'application/json'}
             params = {'fromVersion': current_version}
-            response = requests.get(ZYWRAP_API_ENDPOINT, headers=headers, params=params)
-            response.raise_for_status()
             
-            patch = response.json()
-            if not patch or not patch.get('newVersion'):
-                print("No new updates found. Local data is already up to date.")
-                conn.close()
+            try:
+                response = requests.get(ZYWRAP_API_ENDPOINT, headers=headers, params=params, verify=False)
+                response.raise_for_status()
+            except Exception as e:
+                print(f"❌ API Error: {e}")
                 return
-                
-            print(f"Successfully fetched patch version: {patch['newVersion']}")
-            
-            # 2. Apply patch
-            # Process Updates/Creations (UPSERT)
-            if patch.get('updates'):
-                updates = patch['updates']
-                
-                # Update Wrappers
-                if updates.get('wrappers'):
-                    print(f"Updating {len(updates['wrappers'])} wrapper(s)...")
-                    for w in updates['wrappers']:
-                        cur.execute(
-                            "INSERT INTO wrappers (code, name, description, category_code, featured, base, updated_at) VALUES (%s, %s, %s, %s, %s, %s, NOW()) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, category_code = EXCLUDED.category_code, featured = EXCLUDED.featured, base = EXCLUDED.base, updated_at = NOW()",
-                            (w['code'], w['name'], w.get('desc'), w.get('cat'), w.get('featured'), w.get('base'))
-                        )
-                
-                # Update Categories
-                if updates.get('categories'):
-                    print(f"Updating {len(updates['categories'])} category(s)...")
-                    for code, c in updates['categories'].items():
-                        cur.execute(
-                            "INSERT INTO categories (code, name, updated_at) VALUES (%s, %s, NOW()) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()",
-                            (code, c['name'])
-                        )
 
-                # Update Languages
-                if updates.get('languages'):
-                    print(f"Updating {len(updates['languages'])} language(s)...")
-                    for code, name in updates['languages'].items():
-                        cur.execute(
-                            "INSERT INTO languages (code, name, updated_at) VALUES (%s, %s, NOW()) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()",
-                            (code, name)
-                        )
+            patch = response.json()
+            mode = patch.get('mode', 'UNKNOWN')
+            print(f"🔹 Sync Mode: {mode}")
 
-                # Update AI Models
-                if updates.get('aiModels'):
-                     print(f"Updating {len(updates['aiModels'])} AI model(s)...")
-                     for code, m in updates['aiModels'].items():
-                        cur.execute(
-                            "INSERT INTO ai_models (code, name, provider_id, updated_at) VALUES (%s, %s, %s, NOW()) ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, provider_id=EXCLUDED.provider_id, updated_at=NOW()", 
-                            (code, m['name'], m.get('provId'))
-                        )
+            # --- SCENARIO A: FULL RESET ---
+            if mode == 'FULL_RESET':
+                zip_path = 'zywrap-data.zip'
+                download_url = patch['wrappers']['downloadUrl']
                 
-                # Update Block Templates (Correct logic)
-                print("Checking for block template updates...")
-                for type in BLOCK_TYPES:
-                    if updates.get(type):
-                        for code, name in updates[type].items():
-                            cur.execute(
-                                "INSERT INTO block_templates (type, code, name, updated_at) VALUES (%s, %s, %s, NOW()) ON CONFLICT (type, code) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()",
-                                (type, code, name)
-                            )
-
-            # Process Deletions (Correct logic)
-            if patch.get('deletions'):
-                print(f"Processing {len(patch['deletions'])} deletion(s)...")
-                for d in patch['deletions']:
-                    delete_type = d.get('type')
-                    delete_code = d.get('code')
+                print(f"⬇️  Attempting automatic download from Zywrap...")
+                dl = requests.get(download_url, headers=headers, stream=True, verify=False)
+                
+                if dl.status_code == 200:
+                    with open(zip_path, 'wb') as f:
+                        for chunk in dl.iter_content(chunk_size=8192): f.write(chunk)
                     
-                    if delete_type == 'Wrapper':
-                        cur.execute("DELETE FROM wrappers WHERE code = %s", (delete_code,))
-                    elif delete_type == 'Category':
-                        cur.execute("DELETE FROM categories WHERE code = %s", (delete_code,))
-                    elif delete_type == 'Language':
-                        cur.execute("DELETE FROM languages WHERE code = %s", (delete_code,))
-                    elif delete_type == 'AIModel':
-                        cur.execute("DELETE FROM ai_models WHERE code = %s", (delete_code,))
-                    elif delete_type and 'BlockTemplate' in delete_type:
-                        # Handles all block template types
-                        cur.execute("DELETE FROM block_templates WHERE code = %s", (delete_code,))
-            
-            save_new_version(cur, patch['newVersion'])
-            conn.commit()
-            print(f"\n✅ Sync complete. Local data is now at version {patch['newVersion']}.")
+                    mb_size = round(os.path.getsize(zip_path) / 1024 / 1024, 2)
+                    print(f"✅ Data bundle downloaded successfully ({mb_size} MB).")
+                    
+                    try:
+                        print("📦 Attempting auto-unzip...")
+                        with zipfile.ZipFile(zip_path, 'r') as z: 
+                            z.extractall('.')
+                        print("✅ Auto-unzip successful. Running import script...")
+                        os.remove(zip_path)
+                        
+                        import importlib.util
+                        spec = importlib.util.spec_from_file_location("import_script", "import.py")
+                        import_module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(import_module)
+                        import_module.main()
+
+                    except Exception as z_err:
+                        print("⚠️ Failed to auto-unzip (Check directory permissions).")
+                        print("\\n👉 ACTION REQUIRED:")
+                        print(f"   1. Please manually unzip '{zip_path}' in this folder.")
+                        print("   2. Then run: python import.py")
+                else:
+                    print(f"❌ Automatic download failed. HTTP Status: {dl.status_code}")
+
+            # --- SCENARIO B: DELTA UPDATE ---
+            elif mode == 'DELTA_UPDATE':
+                meta = patch.get('metadata', {})
+                
+                # Categories
+                rows = [(r['code'], r['name'], bool(r.get('status', True)), r.get('position') or r.get('displayOrder') or r.get('ordering')) for r in meta.get('categories', [])]
+                upsert_batch(cur, 'categories', rows, ['code', 'name', 'status', 'ordering'])
+
+                # Languages
+                rows = [(r['code'], r['name'], bool(r.get('status', True)), r.get('ordering')) for r in meta.get('languages', [])]
+                upsert_batch(cur, 'languages', rows, ['code', 'name', 'status', 'ordering'])
+
+                # AI Models
+                rows = [(r['code'], r['name'], bool(r.get('status', True)), r.get('displayOrder') or r.get('ordering')) for r in meta.get('aiModels', [])]
+                upsert_batch(cur, 'ai_models', rows, ['code', 'name', 'status', 'ordering'])
+
+                # Templates
+                rows = []
+                for type_name, items in meta.get('templates', {}).items():
+                    for i in items:
+                        rows.append((type_name, i['code'], i.get('label') or i.get('name'), bool(i.get('status', True))))
+                upsert_batch(cur, 'block_templates', rows, ['type', 'code', 'name', 'status'], pk='compound_template')
+
+                # Use Cases
+                upserts = patch.get('useCases', {}).get('upserts', [])
+                if upserts:
+                    rows = []
+                    for uc in upserts:
+                        schema_str = json.dumps(uc['schema']) if uc.get('schema') else None
+                        rows.append((uc['code'], uc['name'], uc.get('description'), uc.get('categoryCode'), schema_str, bool(uc.get('status', True)), uc.get('displayOrder') or uc.get('ordering')))
+                    upsert_batch(cur, 'use_cases', rows, ['code', 'name', 'description', 'category_code', 'schema_data', 'status', 'ordering'])
+
+                # Wrappers
+                upserts = patch.get('wrappers', {}).get('upserts', [])
+                if upserts:
+                    rows = []
+                    for w in upserts:
+                        rows.append((w['code'], w['name'], w.get('description'), w.get('useCaseCode') or w.get('categoryCode'), bool(w.get('featured') or w.get('isFeatured')), bool(w.get('base') or w.get('isBaseWrapper')), bool(w.get('status', True)), w.get('displayOrder') or w.get('ordering')))
+                    upsert_batch(cur, 'wrappers', rows, ['code', 'name', 'description', 'use_case_code', 'featured', 'base', 'status', 'ordering'])
+
+                # Deletes
+                delete_batch(cur, 'wrappers', patch.get('wrappers', {}).get('deletes', []))
+                delete_batch(cur, 'use_cases', patch.get('useCases', {}).get('deletes', []))
+                
+                # Version
+                if patch.get('newVersion'):
+                    save_new_version(cur, patch['newVersion'])
+                
+                conn.commit()
+                print("✅ Delta Sync Complete.")
+            else:
+                print("✅ No updates needed.")
 
     except Exception as e:
-        conn.rollback()
-        print(f"FATAL: Error during sync, transaction rolled back.\n{e}", file=sys.stderr)
+        if not conn.closed:
+            conn.rollback()
+        print(f"FATAL: Sync Failed: {e}", file=sys.stderr)
     finally:
-        conn.close()
+        if not conn.closed:
+            conn.close()
 
 if __name__ == "__main__":
     main()

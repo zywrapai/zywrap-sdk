@@ -1,119 +1,112 @@
+
 <?php
 // FILE: import.php
 /**
- * Zywrap SDK - Full Data Importer
- *
- * This script unzips 'zywrap-data.zip', reads 'zywrap-data.json' from it,
- * clears local database tables, and performs a full data import.
- *
+ * Zywrap V1 SDK - Tabular Data Importer
  * USAGE: php import.php
  */
-
-// uncomment to increase execution time
-//ini_set('max_execution_time', '1500'); //300 seconds = 5 minutes
-
-
-require 'db.php'; // Your database connection file
+ini_set('max_execution_time', '300');
+require 'db.php';
 
 $jsonFile = 'zywrap-data.json';
-$jsonData = file_get_contents($jsonFile);
+if (!file_exists($jsonFile)) die("Error: Could not find 'zywrap-data.json'.\n");
 
-if ($jsonData === false) {
-    die("Error: Could not find 'zywrap-data.json' file.\n");
-}
+$data = json_decode(file_get_contents($jsonFile), true);
+if (!$data) die("Error: Could not parse JSON data.");
 
-$data = json_decode($jsonData, true);
-
-if (!$data) {
-    die("Error: Could not parse JSON data. Check for syntax errors.");
+// Helper to expand tabular JSON data into associative arrays
+function extractTabular($tabularData) {
+    if (empty($tabularData['cols']) || empty($tabularData['data'])) return [];
+    $cols = $tabularData['cols'];
+    $result = [];
+    foreach ($tabularData['data'] as $row) {
+        $result[] = array_combine($cols, $row);
+    }
+    return $result;
 }
 
 try {
-    echo "Starting full data import...";
+    echo "Starting full V1 data import...\n";
     
-    // 1. Clear existing data
     $pdo->exec('SET FOREIGN_KEY_CHECKS = 0;');
-    $pdo->exec('TRUNCATE TABLE wrappers;');
-    $pdo->exec('TRUNCATE TABLE categories;');
-    $pdo->exec('TRUNCATE TABLE languages;');
-    $pdo->exec('TRUNCATE TABLE block_templates;');
-    $pdo->exec('TRUNCATE TABLE ai_models;');
-    $pdo->exec('TRUNCATE TABLE settings;');
+    $pdo->exec('TRUNCATE TABLE wrappers; TRUNCATE TABLE use_cases; TRUNCATE TABLE categories;');
+    $pdo->exec('TRUNCATE TABLE languages; TRUNCATE TABLE block_templates;');
+    $pdo->exec('TRUNCATE TABLE ai_models; TRUNCATE TABLE settings;');
     $pdo->exec('SET FOREIGN_KEY_CHECKS = 1;');
-    echo "<br>Tables cleared successfully.";
 
-    // 2. Import Categories
-    if (isset($data['categories']) && is_array($data['categories'])) {
-        $cat_ordering = 1;
-        $stmt = $pdo->prepare("INSERT INTO categories (code, name, ordering) VALUES (?, ?, ?)");
-        foreach ($data['categories'] as $code=>$category) {
-            $stmt->execute([$code, $category['name'],$cat_ordering]);
-            $cat_ordering ++;
+    // ✅ START TRANSACTION (Makes imports 100x faster)
+    $pdo->beginTransaction();
+
+    // 1. Categories
+    if (isset($data['categories'])) {
+        $stmt = $pdo->prepare("INSERT INTO categories (code, name, status, ordering) VALUES (?, ?, 1, ?)");
+        foreach (extractTabular($data['categories']) as $c) {
+            $stmt->execute([$c['code'], $c['name'], $c['ordering'] ?? 99999]);
         }
-        echo "<br>Categories imported successfully.";
     }
     
-    // 3. Import Languages
-    if (isset($data['languages']) && is_array($data['languages'])) {
-        $lan_ordering = 1;
-        $stmt = $pdo->prepare("INSERT INTO languages (code, name, ordering) VALUES (?, ?, ?)");
-        foreach ($data['languages'] as $code=>$name) {
-            $stmt->execute([$code, $name, $lan_ordering]);
-            $lan_ordering ++;
+    // 2. Use Cases 
+    if (isset($data['useCases'])) {
+        $stmt = $pdo->prepare("INSERT INTO use_cases (code, name, description, category_code, schema_data, status, ordering) VALUES (?, ?, ?, ?, ?, 1, ?)");
+        foreach (extractTabular($data['useCases']) as $uc) {
+            $schemaJson = !empty($uc['schema']) ? json_encode($uc['schema']) : null;
+            $stmt->execute([$uc['code'], $uc['name'], $uc['desc'], $uc['cat'], $schemaJson, $uc['ordering'] ?? 999999999]);
         }
-        echo "<br>Languages imported successfully.";
     }
 
-    // 4. Import AI Models
-    if (isset($data['aiModels']) && is_array($data['aiModels'])) {
-        $mod_ordering = 1;
-        $stmt = $pdo->prepare("INSERT INTO ai_models (code, name, provider_id, ordering) VALUES (?, ?, ?, ?)");
-        foreach ($data['aiModels'] as $code => $model) {
-            $stmt->execute([
-                $code, $model['name'], $model['provId'], $mod_ordering
-            ]);
-            $mod_ordering ++;
+    // 3. Wrappers
+    if (isset($data['wrappers'])) {
+        $stmt = $pdo->prepare("INSERT INTO wrappers (code, name, description, use_case_code, featured, base, status, ordering) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
+        foreach (extractTabular($data['wrappers']) as $w) {
+            $featured = !empty($w['featured']) ? 1 : 0;
+            $base = !empty($w['base']) ? 1 : 0;
+            $stmt->execute([$w['code'], $w['name'], $w['desc'], $w['usecase'], $featured, $base, $w['ordering'] ?? 999999999]);
         }
-        echo "<br>AI Models imported successfully.";
+    }
+
+    // 4. Languages
+    if (isset($data['languages'])) {
+        $stmt = $pdo->prepare("INSERT INTO languages (code, name, status, ordering) VALUES (?, ?, 1, ?)");
+        $ord = 1;
+        foreach (extractTabular($data['languages']) as $l) {
+            $stmt->execute([$l['code'], $l['name'], $ord++]);
+        }
     }
     
-    // 5. Import Block Templates
-    if (isset($data['templates']) && is_array($data['templates'])) {
-        $stmt = $pdo->prepare("INSERT INTO block_templates (type, code, name) VALUES (?, ?, ?)");
-        foreach ($data['templates'] as $type => $templates) {
-            if (is_array($templates)) {
-                foreach ($templates as $code => $name) {
-                    $stmt->execute([$type, $code, $name]);
-                }
+    // 5. AI Models
+    if (isset($data['aiModels'])) {
+        $stmt = $pdo->prepare("INSERT INTO ai_models (code, name, status, ordering) VALUES (?, ?, 1, ?)");
+        foreach (extractTabular($data['aiModels']) as $m) {
+            $stmt->execute([$m['code'], $m['name'], $m['ordering'] ?? 99999]);
+        }
+    }
+
+    // 6. Block Templates 
+    if (isset($data['templates'])) {
+        $stmt = $pdo->prepare("INSERT INTO block_templates (type, code, name, status) VALUES (?, ?, ?, 1)");
+        foreach ($data['templates'] as $type => $tabular) {
+            foreach (extractTabular($tabular) as $tpl) {
+                $stmt->execute([$type, $tpl['code'], $tpl['name']]);
             }
         }
-        echo "<br>Block templates imported successfully.";
-    }
-
-    // 6. Import Wrappers
-    if (isset($data['wrappers']) && is_array($data['wrappers'])) {
-        $wrap_ordering = 1;
-        $stmt = $pdo->prepare("INSERT INTO wrappers (code, name, description, category_code, featured, base, ordering) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        foreach ($data['wrappers'] as $code => $wrapper) {
-            $stmt->execute([$code, $wrapper['name'], $wrapper['desc'], $wrapper['cat'], $wrapper['featured'], $wrapper['base'], $wrap_ordering]);
-            $wrap_ordering ++;
-        }
-        echo "<br>Wrappers imported successfully.";
     }
 
     // 7. Save Version
     if (isset($data['version'])) {
-        $stmt = $pdo->prepare(
-            "INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?)
-             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)"
-        );
+        $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
         $stmt->execute([$data['version']]);
-        echo "<br>Data version saved to settings table.";
     }
+    // ✅ COMMIT TRANSACTION (Saves everything to hard drive instantly)
+    $pdo->commit();
 
-    echo "<br> Data import complete! Version: " . ($data['version'] ?? 'N/A') . "";
+    echo "✅ V1 Import complete! Version: " . ($data['version'] ?? 'N/A') . "\n";
 
 } catch (PDOException $e) {
-    die("<br>Database error during import: " . $e->getMessage() . "");
+    // If anything fails, undo all changes
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    die("Database error during import: " . $e->getMessage() . "
+");
 }
 ?>
