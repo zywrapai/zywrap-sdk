@@ -1,3 +1,4 @@
+
 <?php
 // FILE: api.php
 ini_set('max_execution_time', '300');
@@ -8,7 +9,6 @@ $zywrapApiKey = "YOUR_ZYWRAP_API_KEY";
 
 // --- V1 Backend Logic ---
 
-// --- Helper Functions ---
 function getCategories($pdo) {
     return $pdo->query("SELECT code, name FROM categories WHERE status = 1 ORDER BY ordering ASC")->fetchAll();
 }
@@ -62,7 +62,8 @@ function executeZywrapProxy($apiKey, $model, $wrapperCode, $prompt, $language, $
         'model' => $model, 
         'wrapperCodes' => [$wrapperCode], 
         'prompt' => $prompt,
-        'variables' => $variables
+        'variables' => $variables,
+        'source' => 'php_sdk'
     ];
     if (!empty($language)) $payloadData['language'] = $language;
     if (!empty($overrides)) $payloadData = array_merge($payloadData, $overrides);
@@ -92,7 +93,14 @@ function executeZywrapProxy($apiKey, $model, $wrapperCode, $prompt, $language, $
                 if ($data && (isset($data['output']) || isset($data['error']))) $finalJson = substr($line, 6);
             }
         }
-        return ['status' => 200, 'response' => $finalJson ?: json_encode(['error' => 'Stream parse failed'])];
+        
+        $statusCode = 200;
+        if ($finalJson) {
+            $parsed = json_decode($finalJson, true);
+            if (isset($parsed['error'])) $statusCode = 400;
+        }
+        
+        return ['status' => $statusCode, 'response' => $finalJson ?: json_encode(['error' => 'Stream parse failed'])];
     }
     return ['status' => $httpCode, 'response' => $rawResponse];
 }
@@ -117,7 +125,7 @@ switch ($action) {
         $result = executeZywrapProxy(
             $zywrapApiKey, 
             $input['model'] ?? null, 
-            $input['wrapperCode'], 
+            $input['wrapperCode'] ?? '',
             $input['prompt'] ?? '', 
             $input['language'] ?? null, 
             $input['variables'] ?? [],
@@ -137,7 +145,9 @@ switch ($action) {
             $completionTokens = $responseData['usage']['completion_tokens'] ?? 0;
             $totalTokens = $responseData['usage']['total_tokens'] ?? 0;
             $creditsUsed = $responseData['cost']['credits_used'] ?? 0;
-            $errorMessage = $status === 'error' ? ($responseData['error'] ?? $result['response']) : null;
+            
+            $fallbackError = substr($result['response'], 0, 255) . (strlen($result['response']) > 255 ? '...' : '');
+            $errorMessage = $status === 'error' ? ($responseData['error'] ?? $fallbackError) : null;
 
             $stmt = $pdo->prepare("INSERT INTO usage_logs (trace_id, wrapper_code, model_code, prompt_tokens, completion_tokens, total_tokens, credits_used, latency_ms, status, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([
