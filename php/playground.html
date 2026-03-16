@@ -114,7 +114,8 @@
     </div>
 
     <script>
-        const API_ENDPOINT = 'api.php';
+        // Points to the Flask Backend
+        const API_ENDPOINT = 'http://localhost:5000/api';
         
         const elements = {
             category: document.getElementById('category'),
@@ -158,7 +159,6 @@
             populateSelect(elements.model, models, 'Default Model');
             populateSelect(elements.language, langs, 'English (Default)');
 
-            // Populate Overrides
             const overrideMap = {
                 tones: 'toneCode', styles: 'styleCode', formattings: 'formatCode',
                 complexities: 'complexityCode', lengths: 'lengthCode', audienceLevels: 'audienceCode',
@@ -169,7 +169,6 @@
             }
         }
 
-        // Category or Filter Change -> Load Wrappers
         const loadWrappers = async () => {
             if (!elements.category.value) {
                 elements.wrapper.innerHTML = '<option value="">-- Select Category First --</option>';
@@ -190,13 +189,13 @@
         elements.filterBase.addEventListener('change', loadWrappers);
         elements.filterFeatured.addEventListener('change', loadWrappers);
 
-        // Wrapper Change -> Load Schema
         elements.wrapper.addEventListener('change', async () => {
             elements.schemaContainer.innerHTML = '';
             elements.promptLabel.textContent = "Prompt / Additional Context";
             if (!elements.wrapper.value) return;
 
             const schema = await fetchAPI('get_schema', 'wrapper=' + elements.wrapper.value);
+            // Maintains your python short-keys ('req', 'opt')
             if (!schema || (!schema.req && !schema.opt)) return;
 
             let html = '';
@@ -207,11 +206,9 @@
                 let sectionHtml = `<div class="schema-section"><h3 class="schema-title">${title}</h3><div class="grid-2">`;
                 for (const [key, def] of Object.entries(data)) {
                     
-                    // 1. Python minifier strips 'p' if false. If undefined, it's a default value.
                     const isPlaceholder = def.p !== undefined ? def.p : false;
                     const defaultVal = def.d !== undefined ? def.d : '';
                     
-                    // 2. Set the correct HTML attributes (mirrors React's initialInputs logic)
                     const placeholderAttr = isPlaceholder ? `placeholder="${defaultVal}"` : '';
                     const valueAttr = (!isPlaceholder && defaultVal) ? `value="${defaultVal}"` : '';
                     
@@ -230,7 +227,6 @@
             elements.schemaContainer.innerHTML = html;
         });
 
-        // Execute
         elements.runBtn.addEventListener('click', async () => {
             if (!elements.wrapper.value) return alert("Please select a wrapper.");
             elements.output.textContent = 'Executing...';
