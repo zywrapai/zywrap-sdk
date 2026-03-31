@@ -1,3 +1,4 @@
+
 # FILE: zywrap-sync.py
 # USAGE: python zywrap-sync.py
 # REQUIREMENTS: pip install requests psycopg2-binary
@@ -65,7 +66,7 @@ def main():
             current_version = get_current_version(cur)
             print(f"🔹 Local Version: {current_version or 'None'}")
             
-            # 🟢 FIX: Commit immediately to release the read-lock on the settings table!
+            # Commit immediately to release the read-lock on the settings table!
             # Without this, import.py will deadlock when trying to TRUNCATE.
             conn.commit()
 
@@ -114,11 +115,12 @@ def main():
 
                     except Exception as z_err:
                         print("⚠️ Failed to auto-unzip (Check directory permissions).")
-                        print("\\n👉 ACTION REQUIRED:")
+                        print("\n👉 ACTION REQUIRED:")
                         print(f"   1. Please manually unzip '{zip_path}' in this folder.")
                         print("   2. Then run: python import.py")
                 else:
                     print(f"❌ Automatic download failed. HTTP Status: {dl.status_code}")
+                    if os.path.exists(zip_path): os.remove(zip_path)
 
             # --- SCENARIO B: DELTA UPDATE ---
             elif mode == 'DELTA_UPDATE':

@@ -31,6 +31,36 @@ def get_categories(cur):
     cur.execute("SELECT code, name FROM categories WHERE status = TRUE ORDER BY ordering ASC")
     return cur.fetchall()
 
+# 🚀 NEW: Fetch Solutions (Use Cases) by Category
+def get_use_cases(cur, category_code):
+    cur.execute("""
+        SELECT code, name 
+        FROM use_cases 
+        WHERE category_code = %s AND status = TRUE 
+        ORDER BY ordering ASC
+    """, (category_code,))
+    return cur.fetchall()
+
+# 🚀 UPDATED: Fetch Wrappers (Styles) by Use Case
+def get_wrappers_by_use_case(cur, use_case_code):
+    cur.execute("""
+        SELECT code, name, featured, base 
+        FROM wrappers 
+        WHERE use_case_code = %s AND status = TRUE
+        ORDER BY ordering ASC
+    """, (use_case_code,))
+    return cur.fetchall()
+
+def get_schema_by_wrapper(cur, wrapper_code):
+    cur.execute("""
+        SELECT uc.schema_data 
+        FROM use_cases uc 
+        JOIN wrappers w ON w.use_case_code = uc.code 
+        WHERE w.code = %s AND w.status = TRUE AND uc.status = TRUE
+    """, (wrapper_code,))
+    res = cur.fetchone()
+    return res['schema_data'] if res else None
+
 def get_languages(cur):
     cur.execute("SELECT code, name FROM languages WHERE status = TRUE ORDER BY ordering ASC")
     return cur.fetchall()
@@ -48,26 +78,6 @@ def get_block_templates(cur):
         if t not in grouped: grouped[t] = []
         grouped[t].append({'code': row['code'], 'name': row['name']})
     return grouped
-
-def get_wrappers_by_category(cur, category_code):
-    cur.execute("""
-        SELECT w.code, w.name, w.featured, w.base 
-        FROM wrappers w 
-        JOIN use_cases uc ON w.use_case_code = uc.code 
-        WHERE uc.category_code = %s AND w.status = TRUE AND uc.status = TRUE
-        ORDER BY w.ordering ASC
-    """, (category_code,))
-    return cur.fetchall()
-
-def get_schema_by_wrapper(cur, wrapper_code):
-    cur.execute("""
-        SELECT uc.schema_data 
-        FROM use_cases uc 
-        JOIN wrappers w ON w.use_case_code = uc.code 
-        WHERE w.code = %s AND w.status = TRUE AND uc.status = TRUE
-    """, (wrapper_code,))
-    res = cur.fetchone()
-    return res['schema_data'] if res else None
 
 # ✅ HYBRID PROXY EXECUTION
 def execute_zywrap_proxy(api_key, model, wrapper_code, prompt, language=None, variables={}, overrides={}):
@@ -128,16 +138,16 @@ def execute_zywrap_proxy(api_key, model, wrapper_code, prompt, language=None, va
 def api_router():
     conn = get_db_connection()
     try:
-        # Use RealDictCursor to automatically convert SQL rows to dictionaries
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             
             if request.method == 'GET':
                 action = request.args.get('action')
                 if action == 'get_categories': return jsonify(get_categories(cur))
+                if action == 'get_use_cases': return jsonify(get_use_cases(cur, request.args.get('category')))
+                if action == 'get_wrappers': return jsonify(get_wrappers_by_use_case(cur, request.args.get('usecase')))
                 if action == 'get_languages': return jsonify(get_languages(cur))
                 if action == 'get_ai_models': return jsonify(get_ai_models(cur))
                 if action == 'get_block_templates': return jsonify(get_block_templates(cur))
-                if action == 'get_wrappers': return jsonify(get_wrappers_by_category(cur, request.args.get('category')))
                 if action == 'get_schema': return jsonify(get_schema_by_wrapper(cur, request.args.get('wrapper')))
 
             if request.method == 'POST':
@@ -145,7 +155,6 @@ def api_router():
                 action = request.args.get('action') or input_data.get('action')
                 
                 if action == 'execute':
-                    # ⏱️ Start Local Timer
                     start_time = time.time()
                     
                     result, status_code = execute_zywrap_proxy(
@@ -158,10 +167,8 @@ def api_router():
                         input_data.get('overrides', {})
                     )
                     
-                    # ⏱️ End Local Timer
                     latency_ms = int((time.time() - start_time) * 1000)
 
-                    # --- 📝 LOGGING TO LOCAL DATABASE ---
                     try:
                         status_text = 'success' if status_code == 200 else 'error'
                         trace_id = result.get('id')

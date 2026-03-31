@@ -1,3 +1,4 @@
+
 <?php
 // FILE: download-bundle.php
 // USAGE: php download-bundle.php
@@ -27,10 +28,9 @@ curl_close($ch);
 fclose($fp);
 
 if ($httpCode !== 200 || !$success) {
+    @unlink($outputFile); // ✅ FIX: Delete corrupted text file masquerading as ZIP on error
     die("Error: Failed to download file. Status code: {$httpCode}\n");
 }
-
-// 🟢 REMOVED file_put_contents() because CURLOPT_FILE already saved it!
 
 echo "✅ Sync complete. Data saved to {$outputFile}.\n";
 echo "Run 'unzip {$outputFile}' to extract the data, then run 'php import.php'.\n";

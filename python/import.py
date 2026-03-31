@@ -1,3 +1,4 @@
+
 # FILE: import.py
 # USAGE: python import.py
 # This script assumes you have 'zywrap-data.json' in the same directory.
@@ -30,7 +31,7 @@ def main():
             print("Clearing tables...")
             cur.execute("TRUNCATE wrappers, use_cases, categories, languages, block_templates, ai_models, settings RESTART IDENTITY CASCADE")
 
-            # ✅ psycopg2 autocommits by default only outside blocks, so we are in a transaction implicitly.
+            # psycopg2 autocommits by default only outside blocks, so we are in a transaction implicitly.
             
             # 1. Import Categories
             if 'categories' in data:

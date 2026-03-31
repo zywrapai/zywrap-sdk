@@ -60,21 +60,22 @@
                 </div>
                 
                 <div class="form-group">
-                    <label>2. AI Template (Wrapper)</label>
-                    <select id="wrapper" disabled><option value="">-- Select Category First --</option></select>
-                    <div class="filters">
-                        <label class="filter-label"><input type="checkbox" id="filter-base"> Base Only</label>
-                        <label class="filter-label"><input type="checkbox" id="filter-featured"> Featured Only</label>
-                    </div>
+                    <label>2. AI Solution</label>
+                    <select id="usecase" disabled><option value="">-- Select Category First --</option></select>
                 </div>
 
                 <div class="form-group">
-                    <label>3. AI Model</label>
+                    <label>3. Configuration Style</label>
+                    <select id="wrapper" disabled><option value="">-- Select Solution First --</option></select>
+                </div>
+
+                <div class="form-group">
+                    <label>4. AI Model</label>
                     <select id="model"><option value="">Loading...</option></select>
                 </div>
 
                 <div class="form-group">
-                    <label>4. Target Language</label>
+                    <label>5. Target Language</label>
                     <select id="language"><option value="">Loading...</option></select>
                 </div>
             </div>
@@ -118,6 +119,7 @@
         
         const elements = {
             category: document.getElementById('category'),
+            usecase: document.getElementById('usecase'), // 🚀 NEW
             wrapper: document.getElementById('wrapper'),
             model: document.getElementById('model'),
             language: document.getElementById('language'),
@@ -125,9 +127,7 @@
             prompt: document.getElementById('prompt'),
             promptLabel: document.getElementById('prompt-label'),
             runBtn: document.getElementById('run-button'),
-            output: document.getElementById('output'),
-            filterBase: document.getElementById('filter-base'),
-            filterFeatured: document.getElementById('filter-featured')
+            output: document.getElementById('output')
         };
 
         async function fetchAPI(action, params = '') {
@@ -158,7 +158,6 @@
             populateSelect(elements.model, models, 'Default Model');
             populateSelect(elements.language, langs, 'English (Default)');
 
-            // Populate Overrides
             const overrideMap = {
                 tones: 'toneCode', styles: 'styleCode', formattings: 'formatCode',
                 complexities: 'complexityCode', lengths: 'lengthCode', audienceLevels: 'audienceCode',
@@ -169,28 +168,68 @@
             }
         }
 
-        // Category or Filter Change -> Load Wrappers
-        const loadWrappers = async () => {
+        // 🚀 CASCADING LOGIC 1: Category -> Load Use Cases
+        elements.category.addEventListener('change', async () => {
             if (!elements.category.value) {
-                elements.wrapper.innerHTML = '<option value="">-- Select Category First --</option>';
+                elements.usecase.innerHTML = '<option value="">-- Select Category First --</option>';
+                elements.usecase.disabled = true;
+                elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
                 elements.wrapper.disabled = true;
                 elements.schemaContainer.innerHTML = '';
                 return;
             }
+            elements.usecase.innerHTML = '<option value="">Loading...</option>';
+            const useCases = await fetchAPI('get_use_cases', 'category=' + elements.category.value);
+            populateSelect(elements.usecase, useCases, '-- Select a Solution --');
+            
+            // Reset wrapper
+            elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+            elements.wrapper.disabled = true;
+            elements.schemaContainer.innerHTML = '';
+        });
+
+        // 🚀 CASCADING LOGIC 2: Use Case -> Load Wrappers
+        elements.usecase.addEventListener('change', async () => {
+            if (!elements.usecase.value) {
+                elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+                elements.wrapper.disabled = true;
+                elements.schemaContainer.innerHTML = '';
+                return;
+            }
+            
             elements.wrapper.innerHTML = '<option value="">Loading...</option>';
-            let wrappers = await fetchAPI('get_wrappers', 'category=' + elements.category.value);
+            let wrappers = await fetchAPI('get_wrappers', 'usecase=' + elements.usecase.value);
             
-            if (elements.filterBase.checked) wrappers = wrappers.filter(w => w.base);
-            if (elements.filterFeatured.checked) wrappers = wrappers.filter(w => w.featured);
+            // Format the labels cleanly (Base vs Variation)
+            elements.wrapper.innerHTML = '<option value="">-- Select a Style --</option>';
             
-            populateSelect(elements.wrapper, wrappers);
-        };
+            let autoSelectCode = null; // Track which wrapper to auto-select
 
-        elements.category.addEventListener('change', loadWrappers);
-        elements.filterBase.addEventListener('change', loadWrappers);
-        elements.filterFeatured.addEventListener('change', loadWrappers);
+            wrappers.forEach((w, index) => {
+                const opt = document.createElement('option');
+                opt.value = w.code;
+                const parts = w.name.split('—');
+                const displayName = w.base ? `✨ Base Template - ${parts[0].trim()}` : `↳ Variation: ${parts.length > 1 ? parts[1].trim() : w.name}`;
+                opt.textContent = displayName;
+                elements.wrapper.appendChild(opt);
 
-        // Wrapper Change -> Load Schema
+                // Identify the Base template, or fallback to the first available variation
+                if (w.base) {
+                    autoSelectCode = w.code;
+                } else if (index === 0 && !autoSelectCode) {
+                    autoSelectCode = w.code;
+                }
+            });
+            elements.wrapper.disabled = false;
+
+            // 🚀 NEW: Auto-select and trigger schema load
+            if (autoSelectCode) {
+                elements.wrapper.value = autoSelectCode;
+                elements.wrapper.dispatchEvent(new Event('change')); // Force the schema to load immediately
+            }
+        });
+
+        // 🚀 CASCADING LOGIC 3: Wrapper -> Load Schema
         elements.wrapper.addEventListener('change', async () => {
             elements.schemaContainer.innerHTML = '';
             elements.promptLabel.textContent = "Prompt / Additional Context";
@@ -206,15 +245,10 @@
                 if (!data || Object.keys(data).length === 0) return '';
                 let sectionHtml = `<div class="schema-section"><h3 class="schema-title">${title}</h3><div class="grid-2">`;
                 for (const [key, def] of Object.entries(data)) {
-                    
-                    // 1. Python minifier strips 'p' if false. If undefined, it's a default value.
                     const isPlaceholder = def.p !== undefined ? def.p : false;
                     const defaultVal = def.d !== undefined ? def.d : '';
-                    
-                    // 2. Set the correct HTML attributes (mirrors React's initialInputs logic)
                     const placeholderAttr = isPlaceholder ? `placeholder="${defaultVal}"` : '';
                     const valueAttr = (!isPlaceholder && defaultVal) ? `value="${defaultVal}"` : '';
-                    
                     const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
                     
                     sectionHtml += `<div>
@@ -270,7 +304,7 @@
                         model: elements.model.value,
                         wrapperCode: elements.wrapper.value,
                         language: elements.language.value,
-                        prompt: finalPrompt, // Pass concatenated prompt
+                        prompt: finalPrompt,
                         variables: variables,
                         overrides: overrides
                     })

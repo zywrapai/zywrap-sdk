@@ -2,9 +2,10 @@
 // FILE: import.js
 // USAGE: node import.js
 // This script assumes you have 'zywrap-data.json' in the same directory.
+// Tip: To prevent memory limits on massive JSON files, run with: node --max-old-space-size=4096 import.js
 
 const fs = require('fs/promises');
-const pool = require('./db');
+const { pool } = require('./db');
 
 // Helper to expand tabular JSON data into arrays of objects
 function extractTabular(tabularData) {
@@ -116,7 +117,7 @@ async function main() {
         }
 
         await client.query('COMMIT');
-        console.log(`\n✅ v1.0 Import complete! Version: ${data.version || 'N/A'}`);
+        console.log('\n✅ v1.0 Import complete! Version: ' + (data.version || 'N/A'));
 
     } catch (e) {
         await client.query('ROLLBACK');
@@ -124,6 +125,7 @@ async function main() {
         process.exit(1);
     } finally {
         client.release();
+        pool.end();
     }
 }
 

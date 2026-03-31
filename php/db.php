@@ -1,5 +1,5 @@
-<?php
 
+<?php
 // FILE: db.php
 // Replace with your actual database credentials
 $host = 'localhost';

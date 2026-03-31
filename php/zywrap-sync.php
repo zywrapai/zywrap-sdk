@@ -1,3 +1,4 @@
+
 <?php
 // FILE: zywrap-sync.php
 /**
@@ -10,13 +11,14 @@
  * USAGE: php zywrap-sync.php
  */
 
-// Increase execution time for large data processing
+// Increase execution time and memory limit for large data processing
 ini_set('max_execution_time', '300');
+ini_set('memory_limit', '512M'); // ✅ FIX: Added limit
 
 // --- CONFIGURATION ---
 $apiKey = "YOUR_ZYWRAP_API_KEY"; 
 $apiUrl = 'https://api.zywrap.com/v1/sdk/v1/sync'; // V1 Sync Endpoint
-require 'db.php'; 
+require_once 'db.php'; 
 
 // --- HELPER: UPSERT BATCH (For Delta Updates) ---
 function upsertBatch(PDO $pdo, string $tableName, array $rows, array $columns, string $pk = 'code') {
@@ -240,7 +242,7 @@ elseif ($mode === 'DELTA_UPDATE') {
 
     // 8. Update Version
     if (!empty($json['newVersion'])) {
-        $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)")->execute([$json['newVersion']]);
+        $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value=?")->execute([$json['newVersion'], $json['newVersion']]);
     }
     
     echo "✅ Delta Sync Complete.\n";

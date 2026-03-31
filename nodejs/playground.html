@@ -30,9 +30,6 @@
         .input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
         textarea { resize: vertical; min-height: 80px; }
         
-        .filters { display: flex; gap: 1rem; margin-top: 0.5rem; }
-        .filter-label { font-size: 0.875rem; font-weight: normal; display: flex; align-items: center; gap: 0.3rem; color: var(--text-muted); cursor: pointer; }
-        
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
         
         .btn { 
@@ -60,21 +57,22 @@
                 </div>
                 
                 <div class="form-group">
-                    <label>2. AI Template (Wrapper)</label>
-                    <select id="wrapper" disabled><option value="">-- Select Category First --</option></select>
-                    <div class="filters">
-                        <label class="filter-label"><input type="checkbox" id="filter-base"> Base Only</label>
-                        <label class="filter-label"><input type="checkbox" id="filter-featured"> Featured Only</label>
-                    </div>
+                    <label>2. AI Solution</label>
+                    <select id="usecase" disabled><option value="">-- Select Category First --</option></select>
                 </div>
 
                 <div class="form-group">
-                    <label>3. AI Model</label>
+                    <label>3. Configuration Style</label>
+                    <select id="wrapper" disabled><option value="">-- Select Solution First --</option></select>
+                </div>
+
+                <div class="form-group">
+                    <label>4. AI Model</label>
                     <select id="model"><option value="">Loading...</option></select>
                 </div>
 
                 <div class="form-group">
-                    <label>4. Target Language</label>
+                    <label>5. Target Language</label>
                     <select id="language"><option value="">Loading...</option></select>
                 </div>
             </div>
@@ -114,12 +112,11 @@
     </div>
 
     <script>
-        // --- API Endpoint ---
-        // Points to the Node/Express server routing
-        const API_ENDPOINT = 'http://localhost:3000/api';
+        const API_ENDPOINT = 'http://localhost:5000/api';
         
         const elements = {
             category: document.getElementById('category'),
+            usecase: document.getElementById('usecase'),
             wrapper: document.getElementById('wrapper'),
             model: document.getElementById('model'),
             language: document.getElementById('language'),
@@ -127,18 +124,16 @@
             prompt: document.getElementById('prompt'),
             promptLabel: document.getElementById('prompt-label'),
             runBtn: document.getElementById('run-button'),
-            output: document.getElementById('output'),
-            filterBase: document.getElementById('filter-base'),
-            filterFeatured: document.getElementById('filter-featured')
+            output: document.getElementById('output')
         };
 
         async function fetchAPI(action, params = '') {
-            const res = await fetch(`${API_ENDPOINT}?action=${action}&${params}`);
+            const res = await fetch(API_ENDPOINT + '?action=' + action + '&' + params);
             return await res.json();
         }
 
         function populateSelect(el, data, placeholder = '-- Select --') {
-            el.innerHTML = `<option value="">${placeholder}</option>`;
+            el.innerHTML = '<option value="">' + placeholder + '</option>';
             data.forEach(item => {
                 const opt = document.createElement('option');
                 opt.value = item.code; 
@@ -170,33 +165,70 @@
             }
         }
 
-        const loadWrappers = async () => {
+        // CASCADING LOGIC 1: Category -> Load Use Cases
+        elements.category.addEventListener('change', async () => {
             if (!elements.category.value) {
-                elements.wrapper.innerHTML = '<option value="">-- Select Category First --</option>';
+                elements.usecase.innerHTML = '<option value="">-- Select Category First --</option>';
+                elements.usecase.disabled = true;
+                elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
                 elements.wrapper.disabled = true;
                 elements.schemaContainer.innerHTML = '';
                 return;
             }
+            elements.usecase.innerHTML = '<option value="">Loading...</option>';
+            const useCases = await fetchAPI('get_use_cases', 'category=' + elements.category.value);
+            populateSelect(elements.usecase, useCases, '-- Select a Solution --');
+            
+            elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+            elements.wrapper.disabled = true;
+            elements.schemaContainer.innerHTML = '';
+        });
+
+        // CASCADING LOGIC 2: Use Case -> Load Wrappers
+        elements.usecase.addEventListener('change', async () => {
+            if (!elements.usecase.value) {
+                elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+                elements.wrapper.disabled = true;
+                elements.schemaContainer.innerHTML = '';
+                return;
+            }
+            
             elements.wrapper.innerHTML = '<option value="">Loading...</option>';
-            let wrappers = await fetchAPI('get_wrappers', 'category=' + elements.category.value);
+            let wrappers = await fetchAPI('get_wrappers', 'usecase=' + elements.usecase.value);
             
-            if (elements.filterBase.checked) wrappers = wrappers.filter(w => w.base);
-            if (elements.filterFeatured.checked) wrappers = wrappers.filter(w => w.featured);
+            elements.wrapper.innerHTML = '<option value="">-- Select a Style --</option>';
             
-            populateSelect(elements.wrapper, wrappers);
-        };
+            let autoSelectCode = null; 
 
-        elements.category.addEventListener('change', loadWrappers);
-        elements.filterBase.addEventListener('change', loadWrappers);
-        elements.filterFeatured.addEventListener('change', loadWrappers);
+            wrappers.forEach((w, index) => {
+                const opt = document.createElement('option');
+                opt.value = w.code;
+                const parts = w.name.split('—');
+                const displayName = w.base ? '✨ Base Template - ' + parts[0].trim() : '↳ Variation: ' + (parts.length > 1 ? parts[1].trim() : w.name);
+                opt.textContent = displayName;
+                elements.wrapper.appendChild(opt);
 
+                if (w.base) {
+                    autoSelectCode = w.code;
+                } else if (index === 0 && !autoSelectCode) {
+                    autoSelectCode = w.code;
+                }
+            });
+            elements.wrapper.disabled = false;
+
+            if (autoSelectCode) {
+                elements.wrapper.value = autoSelectCode;
+                elements.wrapper.dispatchEvent(new Event('change')); 
+            }
+        });
+
+        // CASCADING LOGIC 3: Wrapper -> Load Schema
         elements.wrapper.addEventListener('change', async () => {
             elements.schemaContainer.innerHTML = '';
             elements.promptLabel.textContent = "Prompt / Additional Context";
             if (!elements.wrapper.value) return;
 
             const schema = await fetchAPI('get_schema', 'wrapper=' + elements.wrapper.value);
-            // Maintains your python short-keys ('req', 'opt')
             if (!schema || (!schema.req && !schema.opt)) return;
 
             let html = '';
@@ -204,21 +236,15 @@
 
             const buildSection = (title, data) => {
                 if (!data || Object.keys(data).length === 0) return '';
-                let sectionHtml = `<div class="schema-section"><h3 class="schema-title">${title}</h3><div class="grid-2">`;
+                let sectionHtml = '<div class="schema-section"><h3 class="schema-title">' + title + '</h3><div class="grid-2">';
                 for (const [key, def] of Object.entries(data)) {
-                    
                     const isPlaceholder = def.p !== undefined ? def.p : false;
                     const defaultVal = def.d !== undefined ? def.d : '';
-                    
-                    const placeholderAttr = isPlaceholder ? `placeholder="${defaultVal}"` : '';
-                    const valueAttr = (!isPlaceholder && defaultVal) ? `value="${defaultVal}"` : '';
-                    
+                    const placeholderAttr = isPlaceholder ? 'placeholder="' + defaultVal + '"' : '';
+                    const valueAttr = (!isPlaceholder && defaultVal) ? 'value="' + defaultVal + '"' : '';
                     const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
                     
-                    sectionHtml += `<div>
-                        <label>${label}</label>
-                        <input type="text" class="input schema-input" data-key="${key}" ${placeholderAttr} ${valueAttr}>
-                    </div>`;
+                    sectionHtml += '<div><label>' + label + '</label><input type="text" class="input schema-input" data-key="' + key + '" ' + placeholderAttr + ' ' + valueAttr + '></div>';
                 }
                 return sectionHtml + '</div></div>';
             };
@@ -228,6 +254,7 @@
             elements.schemaContainer.innerHTML = html;
         });
 
+        // Execute
         elements.runBtn.addEventListener('click', async () => {
             if (!elements.wrapper.value) return alert("Please select a wrapper.");
             elements.output.textContent = 'Executing...';
@@ -243,13 +270,13 @@
                 if (val !== '') {
                     const key = input.dataset.key;
                     variables[key] = val;
-                    structuredTextParts.push(`${key}: ${val}`);
+                    structuredTextParts.push(key + ': ' + val);
                 }
             });
 
             const structuredText = structuredTextParts.join('\n');
             if (finalPrompt && structuredText) {
-                finalPrompt = `${finalPrompt}\n\n${structuredText}`;
+                finalPrompt = finalPrompt + '\n\n' + structuredText;
             } else if (structuredText) {
                 finalPrompt = structuredText;
             }
@@ -267,7 +294,7 @@
                         model: elements.model.value,
                         wrapperCode: elements.wrapper.value,
                         language: elements.language.value,
-                        prompt: finalPrompt, // Pass concatenated prompt
+                        prompt: finalPrompt, 
                         variables: variables,
                         overrides: overrides
                     })

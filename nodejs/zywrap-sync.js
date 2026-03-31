@@ -7,34 +7,25 @@ const axios = require('axios');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
 const { execSync } = require('child_process');
-const pool = require('./db'); 
+const { pool } = require('./db.js'); 
 
 // --- CONFIGURATION ---
-const API_KEY = 'YOUR_ZYWRAP_API_KEY_HERE'; // Your Actual Key
+const API_KEY = 'YOUR_ZYWRAP_API_KEY_HERE'; 
 const API_URL = 'https://api.zywrap.com/v1/sdk/v1/sync';
 
 // --- HELPER FUNCTIONS ---
 
-/**
- * Upserts a batch of records. (Used for Delta Updates & Mirror Sync)
- */
 async function upsertBatch(client, tableName, rows, columns, pk = 'code') {
     if (!rows.length) return;
     
-    // Batch size (Safety limit for Postgres params is ~65k. 1000 rows * 10 cols = 10k params, which is safe)
     const BATCH_SIZE = 1000; 
-
-    // 1. Prepare Query Parts (Constant for all batches)
-    const colNames = columns.map(c => `"${c}"`).join(', ');
+    const colNames = columns.map(c => '"' + c + '"').join(', ');
     const updateCols = columns
         .filter(c => c !== pk && c !== 'type')
-        .map(c => `"${c}" = EXCLUDED."${c}"`)
+        .map(c => '"' + c + '" = EXCLUDED."' + c + '"')
         .join(', ');
-    const conflictTarget = pk === 'compound_template' ? '(type, code)' : `("${pk}")`;
+    const conflictTarget = pk === 'compound_template' ? '(type, code)' : '("' + pk + '")';
 
-    console.log(`   [+] Upserting ${rows.length} records into '${tableName}'...`);
-
-    // 2. Loop through chunks
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
         const chunk = rows.slice(i, i + BATCH_SIZE);
         const values = [];
@@ -44,45 +35,32 @@ async function upsertBatch(client, tableName, rows, columns, pk = 'code') {
         for (const row of chunk) {
             const rowPh = [];
             for (const cell of row) {
-                rowPh.push(`$${counter++}`);
+                rowPh.push('$' + counter++);
                 values.push(cell);
             }
-            rowPlaceholders.push(`(${rowPh.join(', ')})`);
+            rowPlaceholders.push('(' + rowPh.join(', ') + ')');
         }
 
-        const query = `
-            INSERT INTO "${tableName}" (${colNames}) 
-            VALUES ${rowPlaceholders.join(', ')}
-            ON CONFLICT ${conflictTarget} 
-            DO UPDATE SET ${updateCols}
-        `;
+        const query = "INSERT INTO " + tableName + " (" + colNames + ") VALUES " + rowPlaceholders.join(', ') + " ON CONFLICT " + conflictTarget + " DO UPDATE SET " + updateCols;
 
         try {
             await client.query(query, values);
-            // Show a dot for every batch to indicate liveliness
-            process.stdout.write('.'); 
         } catch (e) {
-            console.error(`\n   [!] Error upserting batch in ${tableName}:`, e.message);
-            throw e; // Critical: Stop transaction on error
+            console.error("\n   [!] Error upserting batch in " + tableName + ":", e.message);
+            throw e; 
         }
     }
-    console.log(`   [+] Upserted ${rows.length} records into '${tableName}'.`);
+    console.log("   [+] Upserted " + rows.length + " records into " + tableName);
 }
 
-/**
- * Deletes specific IDs. (Used for Delta Updates)
- */
 async function deleteBatch(client, tableName, ids, pk = 'code') {
     if (!ids.length) return;
-    
     const BATCH_SIZE = 2000;
-    console.log(`   [-] Deleting ${ids.length} records from '${tableName}'...`);
-
     for (let i = 0; i < ids.length; i += BATCH_SIZE) {
         const chunk = ids.slice(i, i + BATCH_SIZE);
-        await client.query(`DELETE FROM "${tableName}" WHERE "${pk}" = ANY($1)`, [chunk]);
+        await client.query('DELETE FROM "' + tableName + '" WHERE "' + pk + '" = ANY($1)', [chunk]);
     }
-    console.log(`   [-] Deleted ${ids.length} records from '${tableName}'.`);
+    console.log("   [-] Deleted " + ids.length + " records from " + tableName);
 }
 
 // --- MAIN ---
@@ -93,33 +71,33 @@ async function deleteBatch(client, tableName, ids, pk = 'code') {
     try {
         const verRes = await client.query("SELECT setting_value FROM settings WHERE setting_key = 'data_version'");
         const localVersion = verRes.rows[0]?.setting_value || '';
-        console.log(`🔹 Local Version: ${localVersion || 'None'}`);
+        console.log("🔹 Local Version: " + (localVersion || 'None'));
 
         const response = await axios.get(API_URL, {
             params: { fromVersion: localVersion },
-            headers: { 'Authorization': `Bearer ${API_KEY}` }
+            headers: { 'Authorization': 'Bearer ' + API_KEY }
         });
         
         const json = response.data;
-        console.log(`🔹 Sync Mode: ${json.mode}`);
+        console.log("🔹 Sync Mode: " + json.mode);
 
         if (json.mode === 'FULL_RESET') {
             const zipPath = 'zywrap-data.zip';
             const downloadUrl = json.wrappers.downloadUrl;
 
-            console.log(`⬇️  Attempting automatic download from Zywrap...`);
+            console.log("⬇️  Attempting automatic download from Zywrap...");
             
             try {
                 const dl = await axios({
                     url: downloadUrl,
                     method: 'GET',
                     responseType: 'arraybuffer',
-                    headers: { 'Authorization': `Bearer ${API_KEY}` }
+                    headers: { 'Authorization': 'Bearer ' + API_KEY }
                 });
 
                 fs.writeFileSync(zipPath, dl.data);
                 const mbSize = (fs.statSync(zipPath).size / (1024 * 1024)).toFixed(2);
-                console.log(`✅ Data bundle downloaded successfully (${mbSize} MB).`);
+                console.log("✅ Data bundle downloaded successfully (" + mbSize + " MB).");
                 
                 try {
                     console.log('📦 Attempting auto-unzip...');
@@ -135,12 +113,13 @@ async function deleteBatch(client, tableName, ids, pk = 'code') {
                 } catch (zErr) {
                     console.log("⚠️ Failed to auto-unzip (Check directory permissions).");
                     console.log("\n👉 ACTION REQUIRED:");
-                    console.log(`   1. Please manually unzip '${zipPath}' in this folder.`);
+                    console.log("   1. Please manually unzip '" + zipPath + "' in this folder.");
                     console.log("   2. Then run: node import.js");
                 }
 
             } catch (dlErr) {
-                console.log(`❌ Automatic download failed. HTTP Status: ${dlErr.response?.status || 'Unknown'}`);
+                if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+                console.log("❌ Automatic download failed. HTTP Status: " + (dlErr.response?.status || 'Unknown'));
             }
 
         } else if (json.mode === 'DELTA_UPDATE') {

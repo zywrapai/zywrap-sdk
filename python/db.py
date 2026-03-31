@@ -1,3 +1,4 @@
+
 # FILE: db.py
 # Uses the 'psycopg2' library for PostgreSQL
 # pip install psycopg2-binary

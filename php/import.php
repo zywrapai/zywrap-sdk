@@ -6,7 +6,8 @@
  * USAGE: php import.php
  */
 ini_set('max_execution_time', '300');
-require 'db.php';
+ini_set('memory_limit', '512M');
+require_once 'db.php';
 
 $jsonFile = 'zywrap-data.json';
 if (!file_exists($jsonFile)) die("Error: Could not find 'zywrap-data.json'.\n");
@@ -34,8 +35,9 @@ try {
     $pdo->exec('TRUNCATE TABLE ai_models; TRUNCATE TABLE settings;');
     $pdo->exec('SET FOREIGN_KEY_CHECKS = 1;');
 
-    // ✅ START TRANSACTION (Makes imports 100x faster)
+    // START TRANSACTION (Makes imports 100x faster)
     $pdo->beginTransaction();
+    echo "Clearing tables...\n";
 
     // 1. Categories
     if (isset($data['categories'])) {
@@ -43,6 +45,7 @@ try {
         foreach (extractTabular($data['categories']) as $c) {
             $stmt->execute([$c['code'], $c['name'], $c['ordering'] ?? 99999]);
         }
+        echo "Categories imported successfully.\n";
     }
     
     // 2. Use Cases 
@@ -52,6 +55,7 @@ try {
             $schemaJson = !empty($uc['schema']) ? json_encode($uc['schema']) : null;
             $stmt->execute([$uc['code'], $uc['name'], $uc['desc'], $uc['cat'], $schemaJson, $uc['ordering'] ?? 999999999]);
         }
+        echo "Use Cases imported successfully.\n";
     }
 
     // 3. Wrappers
@@ -62,6 +66,7 @@ try {
             $base = !empty($w['base']) ? 1 : 0;
             $stmt->execute([$w['code'], $w['name'], $w['desc'], $w['usecase'], $featured, $base, $w['ordering'] ?? 999999999]);
         }
+        echo "Wrappers imported successfully.\n";
     }
 
     // 4. Languages
@@ -71,6 +76,7 @@ try {
         foreach (extractTabular($data['languages']) as $l) {
             $stmt->execute([$l['code'], $l['name'], $ord++]);
         }
+        echo "Languages imported successfully.\n";
     }
     
     // 5. AI Models
@@ -79,6 +85,7 @@ try {
         foreach (extractTabular($data['aiModels']) as $m) {
             $stmt->execute([$m['code'], $m['name'], $m['ordering'] ?? 99999]);
         }
+        echo "AI Models imported successfully.\n";
     }
 
     // 6. Block Templates 
@@ -89,24 +96,26 @@ try {
                 $stmt->execute([$type, $tpl['code'], $tpl['name']]);
             }
         }
+        echo "Block templates imported successfully.\n";
     }
 
     // 7. Save Version
     if (isset($data['version'])) {
-        $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
-        $stmt->execute([$data['version']]);
+        $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('data_version', ?) ON DUPLICATE KEY UPDATE setting_value = ?");
+        $stmt->execute([$data['version'], $data['version']]);
+        echo "Data version saved to settings table.\n";
     }
-    // ✅ COMMIT TRANSACTION (Saves everything to hard drive instantly)
+    
+    // COMMIT TRANSACTION (Saves everything to hard drive instantly)
     $pdo->commit();
 
-    echo "✅ V1 Import complete! Version: " . ($data['version'] ?? 'N/A') . "\n";
+    echo "\n✅ V1 Import complete! Version: " . ($data['version'] ?? 'N/A') . "\n";
 
 } catch (PDOException $e) {
     // If anything fails, undo all changes
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
     }
-    die("Database error during import: " . $e->getMessage() . "
-");
+    die("Database error during import: " . $e->getMessage() . "\n");
 }
 ?>

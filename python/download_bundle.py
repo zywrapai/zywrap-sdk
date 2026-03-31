@@ -1,19 +1,17 @@
+
 # FILE: download_bundle.py
 import requests
 import sys
+import os
 
 # --- CONFIGURATION ---
-# Replace with your actual API key and the API endpoint
 ZYWRAP_API_KEY = 'YOUR_API_KEY_HERE'
 API_ENDPOINT = 'https://api.zywrap.com/v1/sdk/v1/download'
 OUTPUT_FILE = 'zywrap-data.zip'
 # ---------------------
 
 def download_sdk_bundle():
-    """
-    Downloads the Zywrap data bundle from the API and saves it to a file.
-    """
-    print("Downloading latest wrapper data from Zywrap...")
+    print("Downloading latest V1 wrapper data from Zywrap...")
 
     if not ZYWRAP_API_KEY or 'YOUR_API_KEY_HERE' in ZYWRAP_API_KEY:
         print("FATAL: Please replace 'YOUR_API_KEY_HERE' with your actual Zywrap API key.", file=sys.stderr)
@@ -35,9 +33,11 @@ def download_sdk_bundle():
         print(f"Run 'unzip {OUTPUT_FILE}' to extract the 'zywrap-data.json' file, then run 'python import.py'.")
 
     except requests.exceptions.HTTPError as e:
+        if os.path.exists(OUTPUT_FILE): os.remove(OUTPUT_FILE)
         print(f"FATAL: API request failed with status code {e.response.status_code}.", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
+        if os.path.exists(OUTPUT_FILE): os.remove(OUTPUT_FILE)
         print(f"FATAL: An error occurred: {e}", file=sys.stderr)
         sys.exit(1)
 
