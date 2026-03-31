@@ -172,12 +172,12 @@
         // Category or Filter Change -> Load Wrappers
         const loadWrappers = async () => {
             if (!elements.category.value) {
-                elements.wrapper.innerHTML = '<option>-- Select Category First --</option>';
+                elements.wrapper.innerHTML = '<option value="">-- Select Category First --</option>';
                 elements.wrapper.disabled = true;
                 elements.schemaContainer.innerHTML = '';
                 return;
             }
-            elements.wrapper.innerHTML = '<option>Loading...</option>';
+            elements.wrapper.innerHTML = '<option value="">Loading...</option>';
             let wrappers = await fetchAPI('get_wrappers', 'category=' + elements.category.value);
             
             if (elements.filterBase.checked) wrappers = wrappers.filter(w => w.base);
@@ -206,9 +206,21 @@
                 if (!data || Object.keys(data).length === 0) return '';
                 let sectionHtml = `<div class="schema-section"><h3 class="schema-title">${title}</h3><div class="grid-2">`;
                 for (const [key, def] of Object.entries(data)) {
-                    const placeholder = def.p ? def.d : '';
+                    
+                    // 1. Python minifier strips 'p' if false. If undefined, it's a default value.
+                    const isPlaceholder = def.p !== undefined ? def.p : false;
+                    const defaultVal = def.d !== undefined ? def.d : '';
+                    
+                    // 2. Set the correct HTML attributes (mirrors React's initialInputs logic)
+                    const placeholderAttr = isPlaceholder ? `placeholder="${defaultVal}"` : '';
+                    const valueAttr = (!isPlaceholder && defaultVal) ? `value="${defaultVal}"` : '';
+                    
                     const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
-                    sectionHtml += `<div><label>${label}</label><input type="text" class="input schema-input" data-key="${key}" placeholder="${placeholder}"></div>`;
+                    
+                    sectionHtml += `<div>
+                        <label>${label}</label>
+                        <input type="text" class="input schema-input" data-key="${key}" ${placeholderAttr} ${valueAttr}>
+                    </div>`;
                 }
                 return sectionHtml + '</div></div>';
             };
@@ -225,10 +237,25 @@
             elements.runBtn.disabled = true;
             elements.runBtn.textContent = 'Generating...';
             
+            let finalPrompt = elements.prompt.value.trim();
             const variables = {};
+            let structuredTextParts = [];
+
             document.querySelectorAll('.schema-input').forEach(input => {
-                if (input.value.trim() !== '') variables[input.dataset.key] = input.value.trim();
+                const val = input.value.trim();
+                if (val !== '') {
+                    const key = input.dataset.key;
+                    variables[key] = val;
+                    structuredTextParts.push(`${key}: ${val}`);
+                }
             });
+
+            const structuredText = structuredTextParts.join('\n');
+            if (finalPrompt && structuredText) {
+                finalPrompt = `${finalPrompt}\n\n${structuredText}`;
+            } else if (structuredText) {
+                finalPrompt = structuredText;
+            }
 
             const overrides = {};
             document.querySelectorAll('.overrides select').forEach(sel => {
@@ -243,13 +270,20 @@
                         model: elements.model.value,
                         wrapperCode: elements.wrapper.value,
                         language: elements.language.value,
-                        prompt: elements.prompt.value,
+                        prompt: finalPrompt, // Pass concatenated prompt
                         variables: variables,
                         overrides: overrides
                     })
                 });
                 
-                const data = await response.json();
+                const text = await response.text();
+                if (!response.ok) {
+                    let errMsg = text;
+                    try { errMsg = JSON.parse(text).error || errMsg; } catch(e) {}
+                    throw new Error(errMsg);
+                }
+                
+                const data = JSON.parse(text);
                 elements.output.textContent = data.output || JSON.stringify(data, null, 2);
             } catch (error) {
                 elements.output.textContent = 'Error: ' + error.message;

@@ -1,3 +1,4 @@
+
 # FILE: app.py
 # A simple Flask server to replicate the 'api.php' V1 playground backend.
 #
@@ -25,7 +26,6 @@ ZYWRAP_API_KEY = "YOUR_ZYWRAP_API_KEY"
 ZYWRAP_PROXY_URL = 'https://api.zywrap.com/v1/proxy'
 
 # --- Database Helper Functions ---
-# (These are the equivalent of the functions in api.php)
 
 def get_categories(cur):
     cur.execute("SELECT code, name FROM categories WHERE status = TRUE ORDER BY ordering ASC")
@@ -42,7 +42,6 @@ def get_ai_models(cur):
 def get_block_templates(cur):
     cur.execute("SELECT type, code, name FROM block_templates WHERE status = TRUE ORDER BY type, name ASC")
     results = cur.fetchall()
-    # Group by type for easy use on the frontend
     grouped = {}
     for row in results:
         t = row['type']
@@ -76,7 +75,8 @@ def execute_zywrap_proxy(api_key, model, wrapper_code, prompt, language=None, va
         'model': model,
         'wrapperCodes': [wrapper_code],
         'prompt': prompt,
-        'variables': variables
+        'variables': variables,
+        'source': 'python_sdk' 
     }
     
     if language: payload_data['language'] = language
@@ -107,7 +107,8 @@ def execute_zywrap_proxy(api_key, model, wrapper_code, prompt, language=None, va
                             pass
             
             if final_json:
-                return final_json, 200
+                status_code = 400 if 'error' in final_json else 200
+                return final_json, status_code
             else:
                 return {'error': 'Stream parse failed'}, 500
         else:
@@ -150,7 +151,7 @@ def api_router():
                     result, status_code = execute_zywrap_proxy(
                         ZYWRAP_API_KEY,
                         input_data.get('model'),
-                        input_data.get('wrapperCode'),
+                        input_data.get('wrapperCode', ''),
                         input_data.get('prompt', ''),
                         input_data.get('language'),
                         input_data.get('variables', {}),
@@ -172,6 +173,10 @@ def api_router():
                         
                         credits_used = result.get('cost', {}).get('credits_used', 0)
                         error_message = result.get('error') if status_text == 'error' else None
+                        
+                        if error_message:
+                            error_msg_str = str(error_message)
+                            error_message = error_msg_str[:255] + '...' if len(error_msg_str) > 255 else error_msg_str
 
                         cur.execute("""
                             INSERT INTO usage_logs 

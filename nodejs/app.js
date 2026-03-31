@@ -1,3 +1,4 @@
+
 // FILE: app.js
 // A simple Express server to replicate the 'api.php' V1 playground backend.
 //
@@ -12,13 +13,13 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const pool = require('./db'); // Your database connection pool
+const pool = require('./db'); 
 
 const app = express();
 const port = 3000;
 
-app.use(cors()); // Enable Cross-Origin Resource Sharing
-app.use(express.json()); // To parse JSON bodies
+app.use(cors()); 
+app.use(express.json());
 
 const ZYWRAP_API_KEY = "YOUR_ZYWRAP_API_KEY";
 const ZYWRAP_PROXY_URL = 'https://api.zywrap.com/v1/proxy';
@@ -79,7 +80,8 @@ async function executeZywrapProxy(apiKey, model, wrapperCode, prompt, language =
         model,
         wrapperCodes: [wrapperCode],
         prompt,
-        variables
+        variables,
+        source: 'node_sdk' 
     };
     
     if (language) payloadData.language = language;
@@ -113,9 +115,13 @@ async function executeZywrapProxy(apiKey, model, wrapperCode, prompt, language =
                 } catch (e) { }
             }
         }
+        
+        let statusCode = 200;
+        if (finalJson && finalJson.error) {
+            statusCode = 400;
+        }
 
-        if (finalJson) return { status: 200, data: finalJson };
-        return { status: 500, data: { error: 'Failed to parse streaming response from Zywrap.' } };
+        return { status: statusCode, data: finalJson || { error: 'Failed to parse streaming response from Zywrap.' } };
 
     } catch (error) {
         const status = error.response?.status || 500;
@@ -151,7 +157,7 @@ app.all('/api', async (req, res) => {
             }
         }
 
-                if (req.method === 'POST') {
+        if (req.method === 'POST') {
             const { model, wrapperCode, prompt, language, variables, overrides } = req.body;
             
             const action = req.query.action || req.body.action; 
@@ -161,7 +167,7 @@ app.all('/api', async (req, res) => {
                 const startTime = Date.now();
                 
                 const { data, status } = await executeZywrapProxy(
-                    ZYWRAP_API_KEY, model, wrapperCode, prompt, language, variables, overrides
+                    ZYWRAP_API_KEY, model, wrapperCode || '', prompt, language, variables, overrides
                 );
                 
                 // ⏱️ End Local Timer
@@ -175,7 +181,10 @@ app.all('/api', async (req, res) => {
                     const cTokens = data.usage?.completion_tokens || 0;
                     const tTokens = data.usage?.total_tokens || 0;
                     const creditsUsed = data.cost?.credits_used || 0;
-                    const errMsg = statusText === 'error' ? (data.error || 'Unknown Error') : null;
+                    
+                    const rawErrorMsg = statusText === 'error' ? (data.error || 'Unknown Error') : null;
+                    const errMsgStr = typeof rawErrorMsg === 'string' ? rawErrorMsg : JSON.stringify(rawErrorMsg);
+                    const errMsg = errMsgStr ? (errMsgStr.length > 255 ? errMsgStr.substring(0, 255) + '...' : errMsgStr) : null;
 
                     await client.query(
                         `INSERT INTO usage_logs 
