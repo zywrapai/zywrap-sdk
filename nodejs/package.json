@@ -1,6 +1,6 @@
 {
-  "name": "zywrap-node-sdk-example",
-  "version": "1.0.0",
+  "name": "zywrap",
+  "version": "1.0.1",
   "description": "Zywrap Node.js SDK Playground",
   "main": "app.js",
   "scripts": {

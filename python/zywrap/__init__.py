@@ -1,4 +1,5 @@
 import requests
+import json
 from typing import List, Dict, Any, Optional
 
 class ZywrapError(Exception):
@@ -17,8 +18,9 @@ class Zywrap:
         self._session = requests.Session()
         self._session.headers.update({
             "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
             "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": "Zywrap/PythonSDK/1.0.0"
+            "User-Agent": "Zywrap/PythonSDK/1.0.2"
         })
 
     def execute(
@@ -49,7 +51,36 @@ class Zywrap:
         try:
             response = self._session.post(self.base_url, json=payload)
             response.raise_for_status()
-            return {"data": response.json(), "status": response.status_code}
+            
+            # --- THE FIX: Parse the SSE Stream ---
+            final_json = None
+            for line in response.text.splitlines():
+                line = line.strip()
+                if line.startswith("data: "):
+                    json_str = line[6:]
+                    
+                    if json_str == "[DONE]":
+                        continue
+                        
+                    try:
+                        parsed = json.loads(json_str)
+                        if parsed and ("output" in parsed or "error" in parsed):
+                            final_json = parsed
+                    except Exception:
+                        pass # Ignore partial chunk parsing errors
+
+            # Fallback for standard JSON if not streaming
+            if not final_json:
+                try:
+                    final_json = response.json()
+                except Exception:
+                    pass # Catch ALL parsing errors to prevent crashing
+
+            if not final_json:
+                # If it completely fails, tell the developer exactly what the server sent
+                raise ZywrapError(f"Failed to parse response. HTTP {response.status_code}. Raw text: '{response.text}'")
+
+            return {"data": final_json, "status": response.status_code}
             
         except requests.exceptions.HTTPError as e:
             error_msg = str(e)
@@ -57,8 +88,9 @@ class Zywrap:
                 error_data = response.json()
                 if "error" in error_data:
                     error_msg = error_data["error"]
-            except ValueError:
+            except Exception:
                 pass
-            raise ZywrapError(f"Zywrap API Error: {error_msg}") from e
+            raise ZywrapError(f"Zywrap API Error: HTTP {response.status_code} - {error_msg}") from e
         except requests.exceptions.RequestException as e:
+            # Only actual network drops will trigger this now
             raise ZywrapError(f"Network error occurred: {str(e)}") from e

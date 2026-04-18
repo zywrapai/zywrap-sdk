@@ -1,0 +1,36 @@
+Metadata-Version: 2.4
+Name: zywrap
+Version: 1.0.2
+Summary: The official Python SDK for the Zywrap AI API.
+Home-page: https://github.com/zywrapai/zywrap-sdk
+Author: Zywrap
+Keywords: zywrap,ai,llm,proxy
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.25.1
+Dynamic: author
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# Zywrap Python SDK
+
+The official Python client for the Zywrap API. Features standard Python typing for excellent IDE support.
+
+## Installation
+
+```bash
+pip install zywrap

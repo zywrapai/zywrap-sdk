@@ -62,8 +62,9 @@ class Zywrap
             CURLOPT_POSTFIELDS => $jsonPayload,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
+                'Accept: application/json, text/event-stream',
                 'Authorization: Bearer ' . $this->apiKey,
-                'User-Agent: Zywrap/PhpSDK/1.0.0',
+                'User-Agent: Zywrap/PhpSDK/1.0.1',
                 'Content-Length: ' . strlen($jsonPayload)
             ]
         ]);
@@ -77,13 +78,41 @@ class Zywrap
             throw new RuntimeException("Zywrap Network Error: " . $error);
         }
 
-        $decodedResponse = json_decode($response, true);
+        // --- THE FIX: Parse the SSE Stream ---
+        $finalJson = null;
+        $lines = explode("\n", $response);
+        
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (strpos($line, 'data: ') === 0) {
+                $jsonStr = substr($line, 6);
+                
+                if ($jsonStr === '[DONE]') continue;
+                
+                $parsed = json_decode($jsonStr, true);
+                if (is_array($parsed) && (isset($parsed['output']) || isset($parsed['error']))) {
+                    $finalJson = $parsed;
+                }
+            }
+        }
 
+        // Fallback for standard JSON if not streaming
+        if ($finalJson === null) {
+            $finalJson = json_decode($response, true);
+        }
+
+        // Total parsing failure fallback
+        if ($finalJson === null) {
+            $rawSample = substr($response, 0, 250);
+            throw new Exception("Failed to parse response. HTTP {$httpCode}. Raw text: '{$rawSample}...'");
+        }
+
+        // Handle API-level HTTP errors
         if ($httpCode < 200 || $httpCode >= 300) {
-            $errorMessage = $decodedResponse['error'] ?? "HTTP Error " . $httpCode;
+            $errorMessage = $finalJson['error'] ?? "HTTP Error " . $httpCode;
             throw new Exception("Zywrap API Error: " . $errorMessage);
         }
 
-        return ['data' => $decodedResponse, 'status' => $httpCode];
+        return ['data' => $finalJson, 'status' => $httpCode];
     }
 }

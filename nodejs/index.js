@@ -54,12 +54,47 @@ export default class Zywrap {
 
             if (!response.ok) {
                 let errorData;
-                try { errorData = await response.json(); } catch (e) { errorData = { error: response.statusText }; }
+                const errText = await response.text();
+                try { errorData = JSON.parse(errText); } catch (e) { errorData = { error: errText }; }
                 throw new Error(errorData.error || `Zywrap API Error (${response.status})`);
             }
 
-            const data = await response.json();
-            return { data, status: response.status };
+            // --- THE FIX: Parse the SSE Stream ---
+            const text = await response.text();
+            const lines = text.split('\n');
+            let finalJson = null;
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                // Check if the line is an SSE data chunk
+                if (trimmed.startsWith('data: ')) {
+                    const jsonStr = trimmed.substring(6);
+                    
+                    // Ignore standard OpenAI/Stream closing tags
+                    if (jsonStr === '[DONE]') continue; 
+
+                    try {
+                        const parsed = JSON.parse(jsonStr);
+                        // Zywrap specifically returns 'output' or 'error' in the final chunk
+                        if (parsed && (parsed.output !== undefined || parsed.error !== undefined)) {
+                            finalJson = parsed;
+                        }
+                    } catch (e) {
+                        // Ignore parse errors on partial stream chunks
+                    }
+                }
+            }
+
+            // Fallback just in case the API returned flat JSON instead of a stream
+            if (!finalJson) {
+                try {
+                    finalJson = JSON.parse(text);
+                } catch(e) {
+                    throw new Error("Zywrap SDK Error: Failed to parse stream response.");
+                }
+            }
+
+            return { data: finalJson, status: response.status };
 
         } catch (error) {
             throw error;
