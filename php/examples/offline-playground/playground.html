@@ -1,0 +1,333 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zywrap V1 Offline Playground</title>
+    <style>
+        :root {
+            --primary: #2563eb; --primary-hover: #1d4ed8;
+            --bg: #f8fafc; --card-bg: #ffffff;
+            --text-main: #0f172a; --text-muted: #64748b;
+            --border: #e2e8f0; --radius: 0.75rem;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text-main); line-height: 1.5; padding: 2rem; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1.8fr; gap: 2rem; }
+        @media (max-width: 768px) { .container { grid-template-columns: 1fr; } }
+        
+        .card { background: var(--card-bg); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.05); padding: 1.5rem; margin-bottom: 1.5rem; }
+        .card-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; color: var(--text-main); }
+        
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.35rem; color: #334155; }
+        
+        .input, select, textarea { 
+            width: 100%; padding: 0.625rem 0.75rem; border: 1px solid var(--border); 
+            border-radius: 0.5rem; font-size: 0.875rem; background: #fff; transition: border-color 0.2s; 
+        }
+        .input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+        textarea { resize: vertical; min-height: 80px; }
+        
+        .filters { display: flex; gap: 1rem; margin-top: 0.5rem; }
+        .filter-label { font-size: 0.875rem; font-weight: normal; display: flex; align-items: center; gap: 0.3rem; color: var(--text-muted); cursor: pointer; }
+        
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+        
+        .btn { 
+            width: 100%; background: var(--primary); color: white; border: none; padding: 0.875rem; 
+            border-radius: 0.5rem; font-weight: 600; font-size: 1rem; cursor: pointer; transition: background 0.2s; 
+        }
+        .btn:hover { background: var(--primary-hover); }
+        .btn:disabled { opacity: 0.7; cursor: not-allowed; }
+        
+        .schema-section { background: #f8fafc; border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+        .schema-title { font-size: 0.875rem; font-weight: 700; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 0.75rem; color: #475569; }
+        
+        #output { background: #f1f5f9; padding: 1.25rem; border-radius: 0.5rem; font-family: ui-monospace, monospace; font-size: 0.875rem; white-space: pre-wrap; min-height: 300px; border: 1px solid var(--border); overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div>
+            <div class="card">
+                <h2 class="card-title">Configuration</h2>
+                
+                <div class="form-group">
+                    <label>1. Category</label>
+                    <select id="category"><option value="">Loading...</option></select>
+                </div>
+                
+                <div class="form-group">
+                    <label>2. AI Solution</label>
+                    <select id="usecase" disabled><option value="">-- Select Category First --</option></select>
+                </div>
+
+                <div class="form-group">
+                    <label>3. Configuration Style</label>
+                    <select id="wrapper" disabled><option value="">-- Select Solution First --</option></select>
+                </div>
+
+                <div class="form-group">
+                    <label>4. AI Model</label>
+                    <select id="model"><option value="">Loading...</option></select>
+                </div>
+
+                <div class="form-group">
+                    <label>5. Target Language</label>
+                    <select id="language"><option value="">Loading...</option></select>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2 class="card-title" style="font-size: 1rem;">Advanced Overrides</h2>
+                <div class="grid-2 overrides">
+                    <div><label>Tone</label><select id="toneCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Style</label><select id="styleCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Formatting</label><select id="formatCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Complexity</label><select id="complexityCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Length</label><select id="lengthCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Audience</label><select id="audienceCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Goal</label><select id="responseGoalCode"><option value="">-- Default --</option></select></div>
+                    <div><label>Output Type</label><select id="outputCode"><option value="">-- Default --</option></select></div>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <div id="dynamic-schema-container"></div>
+                
+                <div class="form-group">
+                    <label id="prompt-label">Prompt / Additional Context</label>
+                    <textarea id="prompt" class="input" placeholder="Type your request or additional instructions here..."></textarea>
+                </div>
+                
+                <button id="run-button" class="btn">Generate Response</button>
+            </div>
+
+            <div class="card">
+                <h2 class="card-title">AI Response</h2>
+                <pre id="output">Output will appear here...</pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_ENDPOINT = 'api.php';
+        
+        const elements = {
+            category: document.getElementById('category'),
+            usecase: document.getElementById('usecase'), // 🚀 NEW
+            wrapper: document.getElementById('wrapper'),
+            model: document.getElementById('model'),
+            language: document.getElementById('language'),
+            schemaContainer: document.getElementById('dynamic-schema-container'),
+            prompt: document.getElementById('prompt'),
+            promptLabel: document.getElementById('prompt-label'),
+            runBtn: document.getElementById('run-button'),
+            output: document.getElementById('output')
+        };
+
+        async function fetchAPI(action, params = '') {
+            const res = await fetch(`${API_ENDPOINT}?action=${action}&${params}`);
+            return await res.json();
+        }
+
+        function populateSelect(el, data, placeholder = '-- Select --') {
+            el.innerHTML = `<option value="">${placeholder}</option>`;
+            data.forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item.code; 
+                opt.textContent = item.name;
+                el.appendChild(opt);
+            });
+            el.disabled = false;
+        }
+
+        async function init() {
+            const [categories, models, langs, templates] = await Promise.all([
+                fetchAPI('get_categories'),
+                fetchAPI('get_ai_models'),
+                fetchAPI('get_languages'),
+                fetchAPI('get_block_templates')
+            ]);
+            
+            populateSelect(elements.category, categories);
+            populateSelect(elements.model, models, 'Default Model');
+            populateSelect(elements.language, langs, 'English (Default)');
+
+            const overrideMap = {
+                tones: 'toneCode', styles: 'styleCode', formattings: 'formatCode',
+                complexities: 'complexityCode', lengths: 'lengthCode', audienceLevels: 'audienceCode',
+                responseGoals: 'responseGoalCode', outputTypes: 'outputCode'
+            };
+            for (const [type, elId] of Object.entries(overrideMap)) {
+                if (templates[type]) populateSelect(document.getElementById(elId), templates[type], '-- Default --');
+            }
+        }
+
+        // 🚀 CASCADING LOGIC 1: Category -> Load Use Cases
+        elements.category.addEventListener('change', async () => {
+            if (!elements.category.value) {
+                elements.usecase.innerHTML = '<option value="">-- Select Category First --</option>';
+                elements.usecase.disabled = true;
+                elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+                elements.wrapper.disabled = true;
+                elements.schemaContainer.innerHTML = '';
+                return;
+            }
+            elements.usecase.innerHTML = '<option value="">Loading...</option>';
+            const useCases = await fetchAPI('get_use_cases', 'category=' + elements.category.value);
+            populateSelect(elements.usecase, useCases, '-- Select a Solution --');
+            
+            // Reset wrapper
+            elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+            elements.wrapper.disabled = true;
+            elements.schemaContainer.innerHTML = '';
+        });
+
+        // 🚀 CASCADING LOGIC 2: Use Case -> Load Wrappers
+        elements.usecase.addEventListener('change', async () => {
+            if (!elements.usecase.value) {
+                elements.wrapper.innerHTML = '<option value="">-- Select Solution First --</option>';
+                elements.wrapper.disabled = true;
+                elements.schemaContainer.innerHTML = '';
+                return;
+            }
+            
+            elements.wrapper.innerHTML = '<option value="">Loading...</option>';
+            let wrappers = await fetchAPI('get_wrappers', 'usecase=' + elements.usecase.value);
+            
+            // Format the labels cleanly (Base vs Variation)
+            elements.wrapper.innerHTML = '<option value="">-- Select a Style --</option>';
+            
+            let autoSelectCode = null; // Track which wrapper to auto-select
+
+            wrappers.forEach((w, index) => {
+                const opt = document.createElement('option');
+                opt.value = w.code;
+                const parts = w.name.split('—');
+                const displayName = w.base ? `✨ Base Template - ${parts[0].trim()}` : `↳ Variation: ${parts.length > 1 ? parts[1].trim() : w.name}`;
+                opt.textContent = displayName;
+                elements.wrapper.appendChild(opt);
+
+                // Identify the Base template, or fallback to the first available variation
+                if (w.base) {
+                    autoSelectCode = w.code;
+                } else if (index === 0 && !autoSelectCode) {
+                    autoSelectCode = w.code;
+                }
+            });
+            elements.wrapper.disabled = false;
+
+            // 🚀 NEW: Auto-select and trigger schema load
+            if (autoSelectCode) {
+                elements.wrapper.value = autoSelectCode;
+                elements.wrapper.dispatchEvent(new Event('change')); // Force the schema to load immediately
+            }
+        });
+
+        // 🚀 CASCADING LOGIC 3: Wrapper -> Load Schema
+        elements.wrapper.addEventListener('change', async () => {
+            elements.schemaContainer.innerHTML = '';
+            elements.promptLabel.textContent = "Prompt / Additional Context";
+            if (!elements.wrapper.value) return;
+
+            const schema = await fetchAPI('get_schema', 'wrapper=' + elements.wrapper.value);
+            if (!schema || (!schema.req && !schema.opt)) return;
+
+            let html = '';
+            elements.promptLabel.textContent = "Additional Free-form Instructions";
+
+            const buildSection = (title, data) => {
+                if (!data || Object.keys(data).length === 0) return '';
+                let sectionHtml = `<div class="schema-section"><h3 class="schema-title">${title}</h3><div class="grid-2">`;
+                for (const [key, def] of Object.entries(data)) {
+                    const isPlaceholder = def.p !== undefined ? def.p : false;
+                    const defaultVal = def.d !== undefined ? def.d : '';
+                    const placeholderAttr = isPlaceholder ? `placeholder="${defaultVal}"` : '';
+                    const valueAttr = (!isPlaceholder && defaultVal) ? `value="${defaultVal}"` : '';
+                    const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                    
+                    sectionHtml += `<div>
+                        <label>${label}</label>
+                        <input type="text" class="input schema-input" data-key="${key}" ${placeholderAttr} ${valueAttr}>
+                    </div>`;
+                }
+                return sectionHtml + '</div></div>';
+            };
+
+            html += buildSection('Core Inputs', schema.req);
+            html += buildSection('Additional Context', schema.opt);
+            elements.schemaContainer.innerHTML = html;
+        });
+
+        // Execute
+        elements.runBtn.addEventListener('click', async () => {
+            if (!elements.wrapper.value) return alert("Please select a wrapper.");
+            elements.output.textContent = 'Executing...';
+            elements.runBtn.disabled = true;
+            elements.runBtn.textContent = 'Generating...';
+            
+            let finalPrompt = elements.prompt.value.trim();
+            const variables = {};
+            let structuredTextParts = [];
+
+            document.querySelectorAll('.schema-input').forEach(input => {
+                const val = input.value.trim();
+                if (val !== '') {
+                    const key = input.dataset.key;
+                    variables[key] = val;
+                    structuredTextParts.push(`${key}: ${val}`);
+                }
+            });
+
+            const structuredText = structuredTextParts.join('\n');
+            if (finalPrompt && structuredText) {
+                finalPrompt = `${finalPrompt}\n\n${structuredText}`;
+            } else if (structuredText) {
+                finalPrompt = structuredText;
+            }
+
+            const overrides = {};
+            document.querySelectorAll('.overrides select').forEach(sel => {
+                if (sel.value) overrides[sel.id] = sel.value;
+            });
+
+            try {
+                const response = await fetch(API_ENDPOINT + '?action=execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: elements.model.value,
+                        wrapperCode: elements.wrapper.value,
+                        language: elements.language.value,
+                        prompt: finalPrompt,
+                        variables: variables,
+                        overrides: overrides
+                    })
+                });
+                
+                const text = await response.text();
+                if (!response.ok) {
+                    let errMsg = text;
+                    try { errMsg = JSON.parse(text).error || errMsg; } catch(e) {}
+                    throw new Error(errMsg);
+                }
+                
+                const data = JSON.parse(text);
+                elements.output.textContent = data.output || JSON.stringify(data, null, 2);
+            } catch (error) {
+                elements.output.textContent = 'Error: ' + error.message;
+            } finally {
+                elements.runBtn.disabled = false;
+                elements.runBtn.textContent = 'Generate Response';
+            }
+        });
+
+        init();
+    </script>
+</body>
+</html>

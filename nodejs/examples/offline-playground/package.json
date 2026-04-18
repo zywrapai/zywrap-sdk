@@ -1,0 +1,18 @@
+{
+  "name": "zywrap-node-sdk-example",
+  "version": "1.0.0",
+  "description": "Zywrap Node.js SDK Playground",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "import": "node import.js",
+    "sync": "node zywrap-sync.js",
+    "download": "node download-bundle.js"
+  },
+  "dependencies": {
+    "axios": "^1.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.0.0",
+    "pg": "^8.0.0"
+  }
+}
